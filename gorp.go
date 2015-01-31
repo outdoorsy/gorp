@@ -300,7 +300,11 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 				elem.FieldByName(plan.versField).SetInt(int64(newVer))
 			}
 		} else {
-			val := elem.FieldByName(k).Interface()
+			current := elem
+			for _, name := range strings.Split(k, ".") {
+				current = current.FieldByName(name)
+			}
+			val := current.Interface()
 			if conv != nil {
 				val, err = conv.ToDb(val)
 				if err != nil {
@@ -715,11 +719,41 @@ func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name str
 	return tmap
 }
 
+func (m *DbMap) columnNameAndOptions(field reflect.StructField) (name string, options []string) {
+	tagVars := strings.Split(field.Tag.Get("db"), ",")
+	if len(tagVars) > 0 {
+		name = tagVars[0]
+	}
+	if name == "" {
+		name = field.Name
+	}
+	if len(tagVars) > 1 {
+		options = tagVars[1:]
+	}
+	return
+}
+
 func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
 	n := t.NumField()
 	for i := 0; i < n; i++ {
 		f := t.Field(i)
-		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+		var (
+			columnName string
+			options    []string
+		)
+		fakeAnonymous := false
+		if !f.Anonymous {
+			// Find the name and options now, in case the field needs to *act*
+			// as if it's embedded.
+			columnName, options = m.columnNameAndOptions(f)
+			for _, option := range options {
+				if option == "embed" {
+					fakeAnonymous = true
+					break
+				}
+			}
+		}
+		if (f.Anonymous || fakeAnonymous) && f.Type.Kind() == reflect.Struct {
 			// Recursively add nested fields in embedded structs.
 			subcols, subversion := m.readStructColumns(f.Type)
 			// Don't append nested fields that have the same field
@@ -733,6 +767,9 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 					}
 				}
 				if shouldAppend {
+					if fakeAnonymous {
+						subcol.fieldName = fmt.Sprintf("%s.%s", columnName, subcol.fieldName)
+					}
 					cols = append(cols, subcol)
 				}
 			}
@@ -740,10 +777,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				version = subversion
 			}
 		} else {
-			columnName := f.Tag.Get("db")
-			if columnName == "" {
-				columnName = f.Name
-			}
 			gotype := f.Type
 			if m.TypeConverter != nil {
 				// Make a new pointer to a value of type gotype and
@@ -1720,23 +1753,33 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		field, found := t.FieldByNameFunc(func(fieldName string) bool {
-			field, _ := t.FieldByName(fieldName)
-			fieldName = field.Tag.Get("db")
+		found := false
+		var field reflect.StructField
+		deeper := true
+		for deeper {
+			deeper = false
+			field, found = t.FieldByNameFunc(func(fieldName string) bool {
+				field, _ := t.FieldByName(fieldName)
+				fieldName, options := m.columnNameAndOptions(field)
 
-			if fieldName == "-" {
-				return false
-			} else if fieldName == "" {
-				fieldName = field.Name
-			}
-			if tableMapped {
-				colMap := colMapOrNil(table, fieldName)
-				if colMap != nil {
-					fieldName = colMap.ColumnName
+				if fieldName == "-" {
+					return false
 				}
-			}
-			return colName == strings.ToLower(fieldName)
-		})
+				for _, option := range options {
+					if option == "embed" {
+						deeper = true
+						return false
+					}
+				}
+				if tableMapped {
+					colMap := colMapOrNil(table, fieldName)
+					if colMap != nil {
+						fieldName = colMap.ColumnName
+					}
+				}
+				return colName == strings.ToLower(fieldName)
+			})
+		}
 		if found {
 			colToFieldIndex[x] = field.Index
 		}
@@ -1831,7 +1874,10 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	custScan := make([]CustomScanner, 0)
 
 	for x, fieldName := range plan.argFields {
-		f := v.Elem().FieldByName(fieldName)
+		f := v.Elem()
+		for _, name := range strings.Split(fieldName, ".") {
+			f = f.FieldByName(name)
+		}
 		target := f.Addr().Interface()
 		if conv != nil {
 			scanner, ok := conv.FromDb(target)

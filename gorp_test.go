@@ -159,6 +159,11 @@ type WithEmbeddedStruct struct {
 	Names
 }
 
+type WithFakeEmbeddedStruct struct {
+	Id    int64
+	Names Names `db:",embed"`
+}
+
 type WithEmbeddedStructBeforeAutoincrField struct {
 	Names
 	Id int64
@@ -1183,6 +1188,19 @@ func TestWithEmbeddedStruct(t *testing.T) {
 	}
 }
 
+func TestWithFakeEmbeddedStruct(t *testing.T) {
+	dbmap := initDbMap()
+	defer dropAndClose(dbmap)
+
+	fes := &WithFakeEmbeddedStruct{-1, Names{FirstName: "Alice", LastName: "Smith"}}
+	_insert(dbmap, fes)
+	expected := &WithFakeEmbeddedStruct{1, Names{FirstName: "Alice", LastName: "Smith"}}
+	fes2 := _get(dbmap, WithFakeEmbeddedStruct{}, fes.Id).(*WithFakeEmbeddedStruct)
+	if !reflect.DeepEqual(expected, fes2) {
+		t.Errorf("%v != %v", expected, fes2)
+	}
+}
+
 func TestWithEmbeddedStructBeforeAutoincr(t *testing.T) {
 	dbmap := initDbMap()
 	defer dropAndClose(dbmap)
@@ -1909,6 +1927,7 @@ func initDbMap() *DbMap {
 	dbmap.AddTableWithName(IdCreated{}, "id_created_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(TypeConversionExample{}, "type_conv_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedStruct{}, "embedded_struct_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(WithFakeEmbeddedStruct{}, "fake_embedded_struct_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedStructBeforeAutoincrField{}, "embedded_struct_before_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedAutoincr{}, "embedded_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithTime{}, "time_test").SetKeys(true, "Id")
