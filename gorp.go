@@ -1756,10 +1756,12 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 		found := false
 		var field reflect.StructField
 		deeper := true
-		for deeper {
+		current := t
+		fieldIndex := make([]int, 0, 5)
+		for !found && deeper {
 			deeper = false
-			field, found = t.FieldByNameFunc(func(fieldName string) bool {
-				field, _ := t.FieldByName(fieldName)
+			field, found = current.FieldByNameFunc(func(fieldName string) bool {
+				field, _ := current.FieldByName(fieldName)
 				fieldName, options := m.columnNameAndOptions(field)
 
 				if fieldName == "-" {
@@ -1767,7 +1769,9 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 				}
 				for _, option := range options {
 					if option == "embed" {
+						fieldIndex = append(fieldIndex, field.Index...)
 						deeper = true
+						current = field.Type
 						return false
 					}
 				}
@@ -1781,7 +1785,8 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 			})
 		}
 		if found {
-			colToFieldIndex[x] = field.Index
+			fieldIndex = append(fieldIndex, field.Index...)
+			colToFieldIndex[x] = fieldIndex
 		}
 		if colToFieldIndex[x] == nil {
 			missingColNames = append(missingColNames, colName)
