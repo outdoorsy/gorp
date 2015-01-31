@@ -1736,16 +1736,48 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
+func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col string) (fieldIndex []int, err error) {
+	tableMapped := table != nil
+	_, found := t.FieldByNameFunc(func(fieldName string) bool {
+		field, _ := t.FieldByName(fieldName)
+		fieldName, options := m.columnNameAndOptions(field)
+
+		if fieldName == "-" {
+			return false
+		}
+		for _, option := range options {
+			if option == "embed" {
+				if index, err := fieldIndexForColumnName(m, table, field.Type, col); err == nil {
+					fieldIndex = append(field.Index, index...)
+					return true
+				}
+				return false
+			}
+		}
+		if tableMapped {
+			colMap := colMapOrNil(table, fieldName)
+			if colMap != nil {
+				fieldName = colMap.ColumnName
+			}
+		}
+		if col == strings.ToLower(fieldName) {
+			fieldIndex = field.Index
+			return true
+		}
+		return false
+	})
+	if !found {
+		err = fmt.Errorf("Could not find field for column %s", col)
+	}
+	return
+}
+
 func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
 	colToFieldIndex := make([][]int, len(cols))
 
 	// check if type t is a mapped table - if so we'll
 	// check the table for column aliasing below
-	tableMapped := false
 	table := tableOrNil(m, t)
-	if table != nil {
-		tableMapped = true
-	}
 
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
@@ -1753,43 +1785,11 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		found := false
-		var field reflect.StructField
-		deeper := true
-		current := t
-		fieldIndex := make([]int, 0, 5)
-		for !found && deeper {
-			deeper = false
-			field, found = current.FieldByNameFunc(func(fieldName string) bool {
-				field, _ := current.FieldByName(fieldName)
-				fieldName, options := m.columnNameAndOptions(field)
-
-				if fieldName == "-" {
-					return false
-				}
-				for _, option := range options {
-					if option == "embed" {
-						fieldIndex = append(fieldIndex, field.Index...)
-						deeper = true
-						current = field.Type
-						return false
-					}
-				}
-				if tableMapped {
-					colMap := colMapOrNil(table, fieldName)
-					if colMap != nil {
-						fieldName = colMap.ColumnName
-					}
-				}
-				return colName == strings.ToLower(fieldName)
-			})
-		}
-		if found {
-			fieldIndex = append(fieldIndex, field.Index...)
-			colToFieldIndex[x] = fieldIndex
-		}
-		if colToFieldIndex[x] == nil {
+		index, err := fieldIndexForColumnName(m, table, t, colName)
+		if err != nil {
 			missingColNames = append(missingColNames, colName)
+		} else {
+			colToFieldIndex[x] = index
 		}
 	}
 	if len(missingColNames) > 0 {
