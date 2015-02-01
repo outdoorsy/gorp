@@ -759,17 +759,16 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 			// Don't append nested fields that have the same field
 			// name as an already-mapped field.
 			for _, subcol := range subcols {
+				if fakeAnonymous {
+					subcol.fieldName = fmt.Sprintf("%s.%s", columnName, subcol.fieldName)
+				}
 				shouldAppend := true
 				for _, col := range cols {
-					if !subcol.Transient && subcol.fieldName == col.fieldName {
-						shouldAppend = false
+					if shouldAppend = subcol.fieldName != col.fieldName || subcol.Transient; !shouldAppend {
 						break
 					}
 				}
 				if shouldAppend {
-					if fakeAnonymous {
-						subcol.fieldName = fmt.Sprintf("%s.%s", columnName, subcol.fieldName)
-					}
 					cols = append(cols, subcol)
 				}
 			}
