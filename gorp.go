@@ -898,7 +898,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				if typer, ok := reflect.New(col.gotype).Interface().(TypeDeffer); ok {
 					stype = typer.TypeDef()
 				} else {
-					stype := m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
+					stype = m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
 				}
 				s.WriteString(fmt.Sprintf("%s %s", m.Dialect.QuoteField(col.ColumnName), stype))
 
