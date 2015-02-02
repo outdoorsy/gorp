@@ -274,6 +274,17 @@ func (t *TableMap) SetVersionCol(field string) *ColumnMap {
 	return c
 }
 
+func dbValue(value interface{}, conv TypeConverter) (interface{}, error) {
+	if conv != nil {
+		var err error
+		value, err = conv.ToDb(value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return value, nil
+}
+
 type bindPlan struct {
 	query             string
 	argFields         []string
@@ -304,12 +315,9 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 			for _, name := range strings.Split(k, ".") {
 				current = current.FieldByName(name)
 			}
-			val := current.Interface()
-			if conv != nil {
-				val, err = conv.ToDb(val)
-				if err != nil {
-					return bindInstance{}, err
-				}
+			val, err := dbValue(current.Interface(), conv)
+			if err != nil {
+				return bindInstance{}, err
 			}
 			bi.args = append(bi.args, val)
 		}
@@ -1183,6 +1191,16 @@ func (m *DbMap) queryRow(query string, args ...interface{}) *sql.Row {
 }
 
 func (m *DbMap) query(query string, args ...interface{}) (*sql.Rows, error) {
+	if m.TypeConverter != nil {
+		var convErr error
+		for index, value := range args {
+			value, convErr = dbValue(value, m.TypeConverter)
+			if convErr != nil {
+				return nil, convErr
+			}
+			args[index] = value
+		}
+	}
 	m.trace(query, args...)
 	return m.Db.Query(query, args...)
 }
