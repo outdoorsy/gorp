@@ -23,6 +23,30 @@ import (
 	"time"
 )
 
+// TypeDeffer is any type that can be used as a column value in the database.
+// This is mainly provided for table creation purposes.  You should use
+// "database/sql".Scanner and "database/sql/driver".Valuer (or a TypeConverter)
+// to implement data conversion.
+//
+// An example for a foreign key:
+//
+//     type User struct {
+//         // Some user fields
+//     }
+//
+//     func (u *User) TypeDef() string {
+//         return "integer references users(user_id)"
+//     }
+//
+// You probably don't want to actually hard code "users(user_id)", so don't
+// copy that part of the example.  Take a look at DbMap.TableFor as an
+// alternative.
+type TypeDeffer interface {
+	// TypeDef should return the string to use as the type's definition
+	// (when used as a column) in the database.
+	TypeDef() string
+}
+
 // Oracle String (empty string is null)
 type OracleString struct {
 	sql.NullString
@@ -870,7 +894,12 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				if x > 0 {
 					s.WriteString(", ")
 				}
-				stype := m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
+				var stype string
+				if typer, ok := reflect.New(col.gotype).Interface().(TypeDeffer); ok {
+					stype = typer.TypeDef()
+				} else {
+					stype := m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
+				}
 				s.WriteString(fmt.Sprintf("%s %s", m.Dialect.QuoteField(col.ColumnName), stype))
 
 				if col.isPK || col.isNotNull {
