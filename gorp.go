@@ -1610,6 +1610,28 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
+func initAnon(m *DbMap, v reflect.Value) {
+	v = v.Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Type().Field(i)
+		anon := f.Anonymous
+		_, options := m.columnNameAndOptions(f)
+		for _, option := range options {
+			if option == "embed" {
+				anon = true
+			}
+		}
+		if anon {
+			if f.Type.Kind() == reflect.Ptr {
+				fv := v.Field(i)
+				if fv.IsNil() {
+					fv.Set(reflect.New(f.Type.Elem()))
+				}
+			}
+		}
+	}
+}
+
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 	var (
@@ -1690,6 +1712,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			break
 		}
 		v := reflect.New(t)
+		initAnon(m, v)
 		dest := make([]interface{}, len(cols))
 
 		custScan := make([]CustomScanner, 0)
