@@ -338,6 +338,9 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 			current := elem
 			for _, name := range strings.Split(k, ".") {
 				if current.Kind() == reflect.Ptr {
+					if current.IsNil() {
+						current.Set(reflect.New(current.Type().Elem()))
+					}
 					current = current.Elem()
 				}
 				current = current.FieldByName(name)
