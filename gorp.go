@@ -1611,14 +1611,15 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 }
 
 func initAnon(m *DbMap, v reflect.Value) {
-	v = v.Elem()
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Type().Field(i)
 		anon := f.Anonymous
-		_, options := m.columnNameAndOptions(f)
-		for _, option := range options {
-			if option == "embed" {
-				anon = true
+		if !anon {
+			_, options := m.columnNameAndOptions(f)
+			for _, option := range options {
+				if option == "embed" {
+					anon = true
+				}
 			}
 		}
 		if anon {
@@ -1712,7 +1713,6 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			break
 		}
 		v := reflect.New(t)
-		initAnon(m, v)
 		dest := make([]interface{}, len(cols))
 
 		custScan := make([]CustomScanner, 0)
@@ -1720,6 +1720,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
+				initAnon(m, f)
 				index := colToFieldIndex[x]
 				if index == nil {
 					// this field is not present in the struct, so create a dummy
