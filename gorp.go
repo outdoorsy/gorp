@@ -1797,7 +1797,11 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 		}
 		for _, option := range options {
 			if option == "embed" {
-				if index, err := fieldIndexForColumnName(m, table, field.Type, col); err == nil {
+				ftype := field.Type
+				if ftype.Kind() == reflect.Ptr {
+					ftype = ftype.Elem()
+				}
+				if index, err := fieldIndexForColumnName(m, table, ftype, col); err == nil {
 					fieldIndex = append(field.Index, index...)
 					return true
 				}
