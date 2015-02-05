@@ -298,15 +298,21 @@ func (t *TableMap) SetVersionCol(field string) *ColumnMap {
 	return c
 }
 
-func dbValue(value interface{}, conv TypeConverter) (interface{}, error) {
+func dbValue(value reflect.Value, conv TypeConverter) (interface{}, error) {
 	if conv != nil {
 		var err error
-		value, err = conv.ToDb(value)
+		result, err := conv.ToDb(value.Interface())
 		if err != nil {
 			return nil, err
 		}
+		if result != value.Interface() {
+			return result, nil
+		}
 	}
-	return value, nil
+	if value.Kind() == reflect.Ptr && !value.IsNil() {
+		return dbValue(value.Elem(), conv)
+	}
+	return value.Interface(), nil
 }
 
 type bindPlan struct {
@@ -349,9 +355,8 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 				if current.IsNil() {
 					current.Set(reflect.New(current.Type().Elem()))
 				}
-				current = current.Elem()
 			}
-			val, err := dbValue(current.Interface(), conv)
+			val, err := dbValue(current, conv)
 			if err != nil {
 				return bindInstance{}, err
 			}
@@ -1244,11 +1249,13 @@ func (m *DbMap) query(query string, args ...interface{}) (*sql.Rows, error) {
 	if m.TypeConverter != nil {
 		var convErr error
 		for index, value := range args {
-			value, convErr = dbValue(value, m.TypeConverter)
-			if convErr != nil {
-				return nil, convErr
+			if value != nil {
+				value, convErr = dbValue(reflect.ValueOf(value), m.TypeConverter)
+				if convErr != nil {
+					return nil, convErr
+				}
+				args[index] = value
 			}
-			args[index] = value
 		}
 	}
 	m.trace(query, args...)
