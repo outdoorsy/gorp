@@ -345,6 +345,12 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 				}
 				current = current.FieldByName(name)
 			}
+			if current.Kind() == reflect.Ptr {
+				if current.IsNil() {
+					current.Set(reflect.New(current.Type().Elem()))
+				}
+				current = current.Elem()
+			}
 			val, err := dbValue(current.Interface(), conv)
 			if err != nil {
 				return bindInstance{}, err
@@ -905,7 +911,12 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 					s.WriteString(", ")
 				}
 				var stype string
-				if typer, ok := reflect.New(col.gotype).Interface().(TypeDeffer); ok {
+				targetElemType := col.gotype
+				if targetElemType.Kind() == reflect.Ptr {
+					targetElemType = targetElemType.Elem()
+				}
+				ptr := reflect.New(targetElemType)
+				if typer, ok := ptr.Interface().(TypeDeffer); ok {
 					stype = typer.TypeDef()
 				} else {
 					stype = m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
