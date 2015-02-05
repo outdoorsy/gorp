@@ -1623,12 +1623,14 @@ func initAnon(m *DbMap, v reflect.Value) {
 			}
 		}
 		if anon {
+			fv := v.Field(i)
 			if f.Type.Kind() == reflect.Ptr {
-				fv := v.Field(i)
 				if fv.IsNil() {
 					fv.Set(reflect.New(f.Type.Elem()))
 				}
+				fv = fv.Elem()
 			}
+			initAnon(m, fv)
 		}
 	}
 }
@@ -1962,9 +1964,13 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	conv := m.TypeConverter
 	custScan := make([]CustomScanner, 0)
 
+	initAnon(m, v.Elem())
 	for x, fieldName := range plan.argFields {
-		f := v.Elem()
+		f := v
 		for _, name := range strings.Split(fieldName, ".") {
+			if f.Kind() == reflect.Ptr {
+				f = f.Elem()
+			}
 			f = f.FieldByName(name)
 		}
 		target := f.Addr().Interface()
