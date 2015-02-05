@@ -785,6 +785,10 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				}
 			}
 		}
+		ftype := f.Type
+		if ftype.Kind() == reflect.Ptr {
+			ftype = ftype.Elem()
+		}
 		if (f.Anonymous || fakeAnonymous) && f.Type.Kind() == reflect.Struct {
 			// Recursively add nested fields in embedded structs.
 			subcols, subversion := m.readStructColumns(f.Type)
