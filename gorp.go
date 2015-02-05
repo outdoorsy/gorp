@@ -298,21 +298,15 @@ func (t *TableMap) SetVersionCol(field string) *ColumnMap {
 	return c
 }
 
-func dbValue(value reflect.Value, conv TypeConverter) (interface{}, error) {
+func dbValue(value interface{}, conv TypeConverter) (interface{}, error) {
 	if conv != nil {
 		var err error
-		result, err := conv.ToDb(value.Interface())
+		value, err = conv.ToDb(value)
 		if err != nil {
 			return nil, err
 		}
-		if result != value.Interface() {
-			return result, nil
-		}
 	}
-	if value.Kind() == reflect.Ptr && !value.IsNil() {
-		return dbValue(value.Elem(), conv)
-	}
-	return value.Interface(), nil
+	return value, nil
 }
 
 type bindPlan struct {
@@ -343,20 +337,9 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 		} else {
 			current := elem
 			for _, name := range strings.Split(k, ".") {
-				if current.Kind() == reflect.Ptr {
-					if current.IsNil() {
-						current.Set(reflect.New(current.Type().Elem()))
-					}
-					current = current.Elem()
-				}
 				current = current.FieldByName(name)
 			}
-			if current.Kind() == reflect.Ptr {
-				if current.IsNil() {
-					current.Set(reflect.New(current.Type().Elem()))
-				}
-			}
-			val, err := dbValue(current, conv)
+			val, err := dbValue(current.Interface(), conv)
 			if err != nil {
 				return bindInstance{}, err
 			}
@@ -802,13 +785,9 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				}
 			}
 		}
-		ftype := f.Type
-		if ftype.Kind() == reflect.Ptr {
-			ftype = ftype.Elem()
-		}
-		if (f.Anonymous || fakeAnonymous) && ftype.Kind() == reflect.Struct {
+		if (f.Anonymous || fakeAnonymous) && f.Type.Kind() == reflect.Struct {
 			// Recursively add nested fields in embedded structs.
-			subcols, subversion := m.readStructColumns(ftype)
+			subcols, subversion := m.readStructColumns(f.Type)
 			// Don't append nested fields that have the same field
 			// name as an already-mapped field.
 			for _, subcol := range subcols {
@@ -916,12 +895,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 					s.WriteString(", ")
 				}
 				var stype string
-				targetElemType := col.gotype
-				if targetElemType.Kind() == reflect.Ptr {
-					targetElemType = targetElemType.Elem()
-				}
-				ptr := reflect.New(targetElemType)
-				if typer, ok := ptr.Interface().(TypeDeffer); ok {
+				if typer, ok := reflect.New(col.gotype).Interface().(TypeDeffer); ok {
 					stype = typer.TypeDef()
 				} else {
 					stype = m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
@@ -1249,13 +1223,11 @@ func (m *DbMap) query(query string, args ...interface{}) (*sql.Rows, error) {
 	if m.TypeConverter != nil {
 		var convErr error
 		for index, value := range args {
-			if value != nil {
-				value, convErr = dbValue(reflect.ValueOf(value), m.TypeConverter)
-				if convErr != nil {
-					return nil, convErr
-				}
-				args[index] = value
+			value, convErr = dbValue(value, m.TypeConverter)
+			if convErr != nil {
+				return nil, convErr
 			}
+			args[index] = value
 		}
 	}
 	m.trace(query, args...)
@@ -1628,31 +1600,6 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
-func initAnon(m *DbMap, v reflect.Value) {
-	for i := 0; i < v.NumField(); i++ {
-		f := v.Type().Field(i)
-		anon := f.Anonymous
-		if !anon {
-			_, options := m.columnNameAndOptions(f)
-			for _, option := range options {
-				if option == "embed" {
-					anon = true
-				}
-			}
-		}
-		if anon {
-			fv := v.Field(i)
-			if f.Type.Kind() == reflect.Ptr {
-				if fv.IsNil() {
-					fv.Set(reflect.New(f.Type.Elem()))
-				}
-				fv = fv.Elem()
-			}
-			initAnon(m, fv)
-		}
-	}
-}
-
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 	var (
@@ -1740,7 +1687,6 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
-				initAnon(m, f)
 				index := colToFieldIndex[x]
 				if index == nil {
 					// this field is not present in the struct, so create a dummy
@@ -1847,11 +1793,7 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 		}
 		for _, option := range options {
 			if option == "embed" {
-				ftype := field.Type
-				if ftype.Kind() == reflect.Ptr {
-					ftype = ftype.Elem()
-				}
-				if index, err := fieldIndexForColumnName(m, table, ftype, col); err == nil {
+				if index, err := fieldIndexForColumnName(m, table, field.Type, col); err == nil {
 					fieldIndex = append(field.Index, index...)
 					return true
 				}
@@ -1982,13 +1924,9 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	conv := m.TypeConverter
 	custScan := make([]CustomScanner, 0)
 
-	initAnon(m, v.Elem())
 	for x, fieldName := range plan.argFields {
-		f := v
+		f := v.Elem()
 		for _, name := range strings.Split(fieldName, ".") {
-			if f.Kind() == reflect.Ptr {
-				f = f.Elem()
-			}
 			f = f.FieldByName(name)
 		}
 		target := f.Addr().Interface()
