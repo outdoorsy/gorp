@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"reflect"
 )
 
@@ -276,7 +275,6 @@ func (m *DbMap) Migrater(schemaname, tablename string) (*MigrationManager, error
 	if err := tmpM.CreateTablesIfNotExists(); err != nil {
 		return nil, err
 	}
-	m.TraceOn("DB:", log.New(os.Stdout, "", log.LstdFlags))
 	m.AddTableWithNameAndSchema(tableRecord{}, schemaname, tablename).SetKeys(true, "ID")
 	return &MigrationManager{
 		schemaname: schemaname,
