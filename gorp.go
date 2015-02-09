@@ -595,7 +595,10 @@ type ColumnMap struct {
 	// Not used elsewhere
 	MaxSize int
 
-	fieldName  string
+	fieldName string
+
+	// origtype is the type prior to calling TypeConverter methods
+	origtype   reflect.Type
 	gotype     reflect.Type
 	isPK       bool
 	isAutoIncr bool
@@ -808,7 +811,8 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				version = subversion
 			}
 		} else {
-			gotype := f.Type
+			origtype := f.Type
+			gotype := origtype
 			if m.TypeConverter != nil {
 				// Make a new pointer to a value of type gotype and
 				// pass it to the TypeConverter's FromDb method to see
@@ -824,6 +828,7 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				ColumnName: columnName,
 				Transient:  columnName == "-",
 				fieldName:  f.Name,
+				origtype:   origtype,
 				gotype:     gotype,
 			}
 			// Check for nested fields of the same field name and
@@ -895,7 +900,11 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 					s.WriteString(", ")
 				}
 				var stype string
-				if typer, ok := reflect.New(col.gotype).Interface().(TypeDeffer); ok {
+				typer, ok := reflect.New(col.origtype).Interface().(TypeDeffer)
+				if !ok && col.origtype != col.gotype {
+					typer, ok = reflect.New(col.gotype).Interface().(TypeDeffer)
+				}
+				if ok {
 					stype = typer.TypeDef()
 				} else {
 					stype = m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
