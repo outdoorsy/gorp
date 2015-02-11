@@ -295,6 +295,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 				if _, err := tx.Exec(sql); err != nil {
 					return err
 				}
+				break
 			}
 		}
 		if !found {
