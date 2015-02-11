@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strings"
 )
 
 type pgJSON []byte
@@ -33,16 +34,25 @@ func (j pgJSON) TypeDef() string {
 	return "json"
 }
 
+// A TypeCaster includes TypeDeffer logic but can also cast other
+// types to another type.
+type TypeCaster interface {
+	// TypeCast should return a string with zero or one '%s'
+	// sequences.  If the string contains a '%s', it will be replaced
+	// with the old value; otherwise, the return value will simply be
+	// used as the type to cast to in the database.
+	TypeCast() string
+}
+
 type columnLayout struct {
 	FieldName  string `json:"field_name"`
 	ColumnName string `json:"column_name"`
 	TypeDef    string `json:"type_def"`
 
-	// Used to ensure that we don't get scan errors on new columns.
-	// We'll probably want to use this for type changes as well
-	// (e.g. changing from a *string to a string, we will need to
-	// update all NULL values to "")
-	gotype reflect.Type `json:"-"`
+	// Values that are only used on the new layout, but are
+	// unnecessary for old types.
+	gotype   reflect.Type `json:"-"`
+	typeCast string       `json:"-"`
 }
 
 type tableRecord struct {
@@ -90,6 +100,13 @@ func (t *tableRecord) Merge(l []columnLayout) {
 	}
 }
 
+func ptrToVal(t reflect.Type) reflect.Value {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return reflect.New(t)
+}
+
 type MigrationManager struct {
 	schemaname string
 	tablename  string
@@ -105,20 +122,34 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			continue
 		}
 		var stype string
-		typer, ok := reflect.New(colMap.origtype).Interface().(TypeDeffer)
+		orig := ptrToVal(colMap.origtype).Interface()
+		dbValue := ptrToVal(colMap.gotype).Interface()
+		typer, ok := orig.(TypeDeffer)
 		if !ok && colMap.origtype != colMap.gotype {
-			typer, ok = reflect.New(colMap.gotype).Interface().(TypeDeffer)
+			typer, ok = dbValue.(TypeDeffer)
 		}
 		if ok {
 			stype = typer.TypeDef()
 		} else {
 			stype = m.dbMap.Dialect.ToSqlType(colMap.gotype, colMap.MaxSize, colMap.isAutoIncr)
 		}
+		cast := "%s"
+		typeCaster, ok := orig.(TypeCaster)
+		if !ok {
+			typeCaster, ok = dbValue.(TypeCaster)
+		}
+		if ok {
+			cast = typeCaster.TypeCast()
+			if !strings.Contains(cast, "%s") {
+				cast = "%s::" + cast
+			}
+		}
 
 		col := columnLayout{
 			FieldName:  colMap.fieldName,
 			ColumnName: colMap.ColumnName,
 			TypeDef:    stype,
+			typeCast:   cast,
 			gotype:     colMap.gotype,
 		}
 		l = append(l, col)
@@ -229,21 +260,38 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			newTable.Tablename,
 		)
 	}
+	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(newTable.Schemaname, newTable.Tablename)
 	for _, newCol := range newTable.TableLayout() {
+		quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
 		found := false
 		for _, oldCol := range oldTable.TableLayout() {
 			if oldCol.ColumnName == newCol.ColumnName {
+				log.Printf("Column %s type %s is now %s type %s", oldCol.ColumnName, oldCol.TypeDef, newCol.ColumnName, newCol.TypeDef)
 				found = true
 				if oldCol.TypeDef != newCol.TypeDef {
-					return errors.New("Unsupported operation: type definition change")
+					oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
+					sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedColumn + " TO " + oldQuotedColumn
+					if _, err := tx.Exec(sql); err != nil {
+						return err
+					}
+					sql = "ALTER TABLE " + quotedTable + " ADD COLUMN " + quotedColumn + " " + newCol.TypeDef
+					if _, err := tx.Exec(sql); err != nil {
+						return err
+					}
+					sql = "UPDATE " + quotedTable + " SET " + quotedColumn + " = " + fmt.Sprintf(newCol.typeCast, oldQuotedColumn)
+					if _, err := tx.Exec(sql); err != nil {
+						return err
+					}
+					sql = "ALTER TABLE " + quotedTable + " DROP COLUMN " + oldQuotedColumn
+					if _, err := tx.Exec(sql); err != nil {
+						return err
+					}
 				}
 			} else if oldCol.FieldName == newCol.FieldName {
 				return errors.New("Unsupported operation: column name change")
 			}
 		}
 		if !found {
-			quotedTable := m.dbMap.Dialect.QuotedTableForQuery(newTable.Schemaname, newTable.Tablename)
-			quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
 			sql := "ALTER TABLE " + quotedTable + " ADD COLUMN " + quotedColumn + " " + newCol.TypeDef
 			if _, err := tx.Exec(sql); err != nil {
 				return err
