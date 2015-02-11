@@ -286,8 +286,15 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 						return err
 					}
 				}
-			} else if oldCol.FieldName == newCol.FieldName {
-				return errors.New("Unsupported operation: column name change")
+				break
+			}
+			if oldCol.FieldName == newCol.FieldName {
+				found = true
+				oldQuotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
+				sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + oldQuotedColumn + " TO " + quotedColumn
+				if _, err := tx.Exec(sql); err != nil {
+					return err
+				}
 			}
 		}
 		if !found {
