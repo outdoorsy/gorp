@@ -265,7 +265,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 		quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
 		found := false
 		for _, oldCol := range oldTable.TableLayout() {
-			if oldCol.ColumnName == newCol.ColumnName {
+			if strings.ToLower(oldCol.ColumnName) == strings.ToLower(newCol.ColumnName) {
 				found = true
 				if oldCol.TypeDef != newCol.TypeDef {
 					oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
