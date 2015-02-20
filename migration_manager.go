@@ -5,10 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"strings"
 )
+
+// A TypeCaster includes TypeDeffer logic but can also return the SQL
+// to cast old types to its new type.
+type TypeCaster interface {
+	// TypeCast should return a string with zero or one '%s'
+	// sequences.  If the string contains a '%s', it will be replaced
+	// with the old value; otherwise, the return value will simply be
+	// used as the type to cast to in the database.
+	TypeCast() string
+}
 
 type pgJSON []byte
 
@@ -32,16 +41,6 @@ func (j *pgJSON) Scan(src interface{}) error {
 
 func (j pgJSON) TypeDef() string {
 	return "json"
-}
-
-// A TypeCaster includes TypeDeffer logic but can also cast other
-// types to another type.
-type TypeCaster interface {
-	// TypeCast should return a string with zero or one '%s'
-	// sequences.  If the string contains a '%s', it will be replaced
-	// with the old value; otherwise, the return value will simply be
-	// used as the type to cast to in the database.
-	TypeCast() string
 }
 
 type columnLayout struct {
@@ -199,7 +198,6 @@ func (m *MigrationManager) Migrate() (err error) {
 	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(m.schemaname, m.tablename)
 	_, err = m.dbMap.Select(&m.oldTables, "select * from "+quotedTable)
 	if err != nil {
-		log.Print("Migration error:", err)
 		return err
 	}
 	return m.run()
@@ -242,10 +240,8 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 	}
 	defer func() {
 		if err == nil {
-			log.Printf("Error is nil, committing")
 			err = tx.Commit()
 		} else {
-			log.Printf("Error is non-nil, rolling back: %v", err)
 			rollbackErr := tx.Rollback()
 			if rollbackErr != nil {
 				panic(rollbackErr)
