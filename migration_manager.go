@@ -9,6 +9,16 @@ import (
 	"strings"
 )
 
+// A TypeDefSwitcher is a TypeDeffer except that it won't have its type
+// defined on table creation.  Instead, its type will be changed on
+// the first migration run.  Useful for foreign keys when the target
+// table may be created later than the column.
+type TypeDefSwitcher interface {
+	// TypeDefSwitch should return the same thing as
+	// TypeDeffer.TypeDef.
+	TypeDefSwitch() string
+}
+
 // A TypeCaster includes TypeDeffer logic but can also return the SQL
 // to cast old types to its new type.
 type TypeCaster interface {
@@ -50,8 +60,9 @@ type columnLayout struct {
 
 	// Values that are only used on the new layout, but are
 	// unnecessary for old types.
-	gotype   reflect.Type `json:"-"`
-	typeCast string       `json:"-"`
+	isTypeSwitch bool         `json:"-"`
+	gotype       reflect.Type `json:"-"`
+	typeCast     string       `json:"-"`
 }
 
 type tableRecord struct {
@@ -123,12 +134,18 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 		var stype string
 		orig := ptrToVal(colMap.origtype).Interface()
 		dbValue := ptrToVal(colMap.gotype).Interface()
-		typer, ok := orig.(TypeDeffer)
-		if !ok && colMap.origtype != colMap.gotype {
-			typer, ok = dbValue.(TypeDeffer)
+		typer, hasDef := orig.(TypeDeffer)
+		if !hasDef && colMap.origtype != colMap.gotype {
+			typer, hasDef = dbValue.(TypeDeffer)
 		}
-		if ok {
+		typeSwitcher, hasSwitch := orig.(TypeDefSwitcher)
+		if !hasSwitch && colMap.origtype != colMap.gotype {
+			typeSwitcher, hasSwitch = dbValue.(TypeDefSwitcher)
+		}
+		if hasDef {
 			stype = typer.TypeDef()
+		} else if hasSwitch {
+			stype = typeSwitcher.TypeDefSwitch()
 		} else {
 			stype = m.dbMap.Dialect.ToSqlType(colMap.gotype, colMap.MaxSize, colMap.isAutoIncr)
 		}
@@ -145,11 +162,12 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 		}
 
 		col := columnLayout{
-			FieldName:  colMap.fieldName,
-			ColumnName: colMap.ColumnName,
-			TypeDef:    stype,
-			typeCast:   cast,
-			gotype:     colMap.gotype,
+			FieldName:    colMap.fieldName,
+			ColumnName:   colMap.ColumnName,
+			TypeDef:      stype,
+			isTypeSwitch: hasSwitch,
+			typeCast:     cast,
+			gotype:       colMap.gotype,
 		}
 		l = append(l, col)
 	}
@@ -161,17 +179,15 @@ func (m *MigrationManager) addTable(t *TableMap) {
 	for _, r := range m.newTables {
 		if r.Schemaname == t.SchemaName && r.Tablename == t.TableName {
 			r.Merge(l)
-			l = nil
+			return
 		}
 	}
-	if l != nil {
-		r := &tableRecord{
-			Schemaname: t.SchemaName,
-			Tablename:  t.TableName,
-		}
-		r.SetTableLayout(l)
-		m.newTables = append(m.newTables, r)
+	r := &tableRecord{
+		Schemaname: t.SchemaName,
+		Tablename:  t.TableName,
 	}
+	r.SetTableLayout(l)
+	m.newTables = append(m.newTables, r)
 }
 
 func (m *MigrationManager) newTableRecords() []*tableRecord {
@@ -215,6 +231,7 @@ func (m *MigrationManager) run() error {
 			}
 		}
 		if !found {
+			m.handleTypeSwitches(newTable)
 			if err := m.dbMap.Insert(newTable); err != nil {
 				return err
 			}
@@ -223,16 +240,53 @@ func (m *MigrationManager) run() error {
 	return nil
 }
 
-// layout:
-//
-// [
-//   {
-//     "field_name": someName,
-//     "column_name": someOtherName,
-//     "type_def": someDefinition,
-//     "constraints": [],
-//   }
-// ]
+func (m *MigrationManager) handleTypeSwitches(table *tableRecord) (err error) {
+	tx, err := m.dbMap.Begin()
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				panic(rollbackErr)
+			}
+		}
+	}()
+	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(table.Schemaname, table.Tablename)
+	for _, newCol := range table.TableLayout() {
+		if newCol.isTypeSwitch {
+			if err = m.changeType(quotedTable, newCol, tx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MigrationManager) changeType(quotedTable string, newCol columnLayout, tx *Transaction) error {
+	quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
+	oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
+	sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedColumn + " TO " + oldQuotedColumn
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	sql = "ALTER TABLE " + quotedTable + " ADD COLUMN " + quotedColumn + " " + newCol.TypeDef
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	sql = "UPDATE " + quotedTable + " SET " + quotedColumn + " = " + fmt.Sprintf(newCol.typeCast, oldQuotedColumn)
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	sql = "ALTER TABLE " + quotedTable + " DROP COLUMN " + oldQuotedColumn
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err error) {
 	tx, err := m.dbMap.Begin()
 	if err != nil {
@@ -242,8 +296,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 		if err == nil {
 			err = tx.Commit()
 		} else {
-			rollbackErr := tx.Rollback()
-			if rollbackErr != nil {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
 				panic(rollbackErr)
 			}
 		}
@@ -264,21 +317,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			if strings.ToLower(oldCol.ColumnName) == strings.ToLower(newCol.ColumnName) {
 				found = true
 				if oldCol.TypeDef != newCol.TypeDef {
-					oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
-					sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedColumn + " TO " + oldQuotedColumn
-					if _, err := tx.Exec(sql); err != nil {
-						return err
-					}
-					sql = "ALTER TABLE " + quotedTable + " ADD COLUMN " + quotedColumn + " " + newCol.TypeDef
-					if _, err := tx.Exec(sql); err != nil {
-						return err
-					}
-					sql = "UPDATE " + quotedTable + " SET " + quotedColumn + " = " + fmt.Sprintf(newCol.typeCast, oldQuotedColumn)
-					if _, err := tx.Exec(sql); err != nil {
-						return err
-					}
-					sql = "ALTER TABLE " + quotedTable + " DROP COLUMN " + oldQuotedColumn
-					if _, err := tx.Exec(sql); err != nil {
+					if err := m.changeType(quotedTable, newCol, tx); err != nil {
 						return err
 					}
 				}
