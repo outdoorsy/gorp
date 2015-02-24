@@ -231,7 +231,9 @@ func (m *MigrationManager) run() error {
 			}
 		}
 		if !found {
-			m.handleTypeSwitches(newTable)
+			if err := m.handleTypeSwitches(newTable); err != nil {
+				return err
+			}
 			if err := m.dbMap.Insert(newTable); err != nil {
 				return err
 			}
