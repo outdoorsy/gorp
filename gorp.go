@@ -293,14 +293,14 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			if targetType.Kind() == reflect.Ptr {
 				targetType = targetType.Elem()
 			}
+			if targetType.Kind() != reflect.Struct {
+				panic("Foreign keys that are not structs or pointers to structs cannot be mapped to real columns (hint: `db:\"-,fkey\"`)")
+			}
 			var err error
 			targetTable, err = t.dbmap.TableFor(targetType, true)
 			if err != nil {
-				panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s", targetType.Name()))
+				panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s: %s", targetType.Name(), err))
 			}
-			// TODO: Deal with overriding fields from embedded
-			// structs.  For now, we don't need it, but it will be
-			// necessary before merge into go-gorp/gorp.
 			for _, key := range targetTable.keys {
 				cm := &ColumnMap{
 					ColumnName: fmt.Sprintf("%s_%s", targetTable.TableName, key.ColumnName),
@@ -318,6 +318,19 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 					column: cm,
 				})
 				cols = append(cols, cm)
+			}
+			// Check the target table for transient references to
+			// this table.
+			for _, targetCol := range targetTable.Columns {
+				if targetCol.Transient {
+					targetType := targetCol.gotype
+					for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
+						targetType = targetType.Elem()
+					}
+					if t.gotype == targetType {
+						targetCol.targetTable = t
+					}
+				}
 			}
 			// We want to include the parent field in the list of
 			// columns, but not map it to an actual database column.
@@ -1817,7 +1830,9 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 }
 
 // fieldByIndex is a copy of v.FieldByIndex, except that it will
-// initialize nil pointers while descending the indexes.
+// initialize nil pointers while descending the indexes.  It also will
+// descend into slices and arrays, so slice/array indexes can be used
+// in index.
 func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 	for _, idx := range index {
 		if v.Kind() == reflect.Ptr {
@@ -1826,7 +1841,14 @@ func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 			}
 			v = v.Elem()
 		}
-		v = v.Field(idx)
+		switch v.Kind() {
+		case reflect.Struct:
+			v = v.Field(idx)
+		case reflect.Slice, reflect.Array:
+			v = v.Index(idx)
+		default:
+			panic("gorp: found unsupported type using fieldByIndex")
+		}
 	}
 	return v
 }
