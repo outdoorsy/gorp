@@ -23,6 +23,8 @@ import (
 	"time"
 )
 
+const sliceIndexPlaceholder = -1
+
 // TypeDeffer is any type that can be used as a column value in the database.
 // This is mainly provided for table creation purposes.  You should use
 // "database/sql".Scanner and "database/sql/driver".Valuer (or a TypeConverter)
@@ -516,7 +518,7 @@ func (t *TableMap) SetUniqueTogether(fieldNames ...string) *TableMap {
 // name.  It panics if the struct does not contain a field matching this
 // name.
 func (t *TableMap) ColMap(field interface{}) *ColumnMap {
-	col := colMapOrNil(t, field)
+	_, col := colMapOrNil(t, field)
 	if col == nil {
 		e := fmt.Sprintf("No ColumnMap in table %s type %s with field %v",
 			t.TableName, t.gotype.Name(), field)
@@ -526,31 +528,38 @@ func (t *TableMap) ColMap(field interface{}) *ColumnMap {
 	return col
 }
 
-func colMapOrNil(t *TableMap, field interface{}) *ColumnMap {
+func colMapOrNil(t *TableMap, field interface{}) (multiJoinColumns []*ColumnMap, column *ColumnMap) {
 	fieldName, isStr := field.(string)
 	for _, col := range t.Columns {
 		if isStr {
 			if col.targetTable != nil && strings.HasPrefix(fieldName, col.JoinAlias()) {
 				// This field may belong to a field within col's type.
-				subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinAlias()):])
+				subMultiJoins, subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinAlias()):])
 				if subcol != nil {
+					multiJoinColumns = subMultiJoins
 					// We need to return a copy of subcol, but with
 					// its fieldIndex updated to include col's
 					// fieldIndex
 					subcolCopy := new(ColumnMap)
 					*subcolCopy = *subcol
-					subcolCopy.fieldIndex = append(col.fieldIndex, subcolCopy.fieldIndex...)
-					return subcolCopy
+					index := col.fieldIndex
+					if col.gotype.Kind() == reflect.Slice || col.gotype.Kind() == reflect.Array {
+						index = append(index, sliceIndexPlaceholder)
+						multiJoinColumns = append([]*ColumnMap{col}, multiJoinColumns...)
+					}
+					subcolCopy.fieldIndex = append(index, subcolCopy.fieldIndex...)
+					column = subcolCopy
+					return
 				}
 			}
 			if col.fieldName == fieldName || col.ColumnName == fieldName || col.JoinAlias() == fieldName {
-				return col
+				return nil, col
 			}
 		} else if col.fieldRef == field {
-			return col
+			return nil, col
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // SetVersionCol sets the column to use as the Version field.  By default
@@ -1845,6 +1854,15 @@ func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 		case reflect.Struct:
 			v = v.Field(idx)
 		case reflect.Slice, reflect.Array:
+			if idx == sliceIndexPlaceholder {
+				// The placeholder means to return the first element,
+				// creating a first element if necessary.
+				idx = 0
+				if v.Len() == 0 {
+					newV := reflect.New(v.Type().Elem()).Elem()
+					v.Set(reflect.Append(v, newV))
+				}
+			}
 			v = v.Index(idx)
 		default:
 			panic("gorp: found unsupported type using fieldByIndex")
@@ -1905,9 +1923,13 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		return nil, fmt.Errorf("gorp: select into non-struct slice requires 1 column, got %d", len(cols))
 	}
 
-	var colToFieldIndex [][]int
+	var (
+		colToFieldIndex [][]int
+		multiJoinCols   [][]*ColumnMap
+		table           *TableMap
+	)
 	if intoStruct {
-		if colToFieldIndex, err = columnToFieldIndex(m, t, cols); err != nil {
+		if colToFieldIndex, table, multiJoinCols, err = columnToFieldIndex(m, t, cols); err != nil {
 			if !NonFatalError(err) {
 				return nil, err
 			}
@@ -1923,6 +1945,9 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		sliceValue = reflect.Indirect(reflect.ValueOf(i))
 	)
 
+	// We'll store types with keys that have already been read (for
+	// one-to-many or many-to-many queries) in a map.
+	parsedRows := make(map[reflect.Type]map[string]reflect.Value)
 	for {
 		if !rows.Next() {
 			// if error occured return rawselect
@@ -1940,6 +1965,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
+
 				index := colToFieldIndex[x]
 				if index == nil {
 					// this field is not present in the struct, so create a dummy
@@ -1973,13 +1999,27 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			}
 		}
 
-		if appendToSlice {
-			if !pointerElements {
-				v = v.Elem()
+		shouldAppend := true
+		if multiJoinCols != nil {
+			// There are slice elements in the type that are being
+			// filled out by values in the query.  This means the
+			// select is probably a many-to-many or one-to-many join
+			// statement, and we need to deal with the possibility
+			// that parts of this row have already been loaded.
+
+			found := handleMultiJoin(v.Elem(), table, multiJoinCols, parsedRows)
+			shouldAppend = !found
+		}
+
+		if shouldAppend {
+			if appendToSlice {
+				if !pointerElements {
+					v = v.Elem()
+				}
+				sliceValue.Set(reflect.Append(sliceValue, v))
+			} else {
+				list = append(list, v.Interface())
 			}
-			sliceValue.Set(reflect.Append(sliceValue, v))
-		} else {
-			list = append(list, v.Interface())
 		}
 	}
 
@@ -1988,6 +2028,67 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	}
 
 	return list, nonFatalErr
+}
+
+func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) bool {
+	rowKeyBuf := bytes.NewBufferString("|")
+	for _, k := range table.keys {
+		thisRowKey := v.FieldByIndex(k.fieldIndex).Interface()
+		rowKeyBuf.WriteString(fmt.Sprint(thisRowKey))
+		rowKeyBuf.WriteRune('|')
+	}
+	rowKey := rowKeyBuf.String()
+
+	tableValueMap, ok := parsedRows[table.gotype]
+	if !ok {
+		tableValueMap = make(map[string]reflect.Value)
+		parsedRows[table.gotype] = tableValueMap
+	}
+
+	rowVal, ok := tableValueMap[rowKey]
+	if !ok {
+		tableValueMap[rowKey] = v
+		return false
+	}
+
+	// Store keys to types so we don't regenerate keys if we need to
+	// check the same type multiple times.
+	typeKeysForRow := map[reflect.Type]string{
+		table.gotype: rowKey,
+	}
+	for _, joinedCols := range multiJoinCols {
+		subV := v
+		targetV := rowVal
+		for _, subCol := range joinedCols {
+			subV = subV.FieldByIndex(subCol.fieldIndex).Index(0)
+			key, keyCreated := typeKeysForRow[subV.Type()]
+			if !keyCreated {
+				keyFinder := subV
+				if keyFinder.Kind() == reflect.Ptr {
+					keyFinder = keyFinder.Elem()
+				}
+				keyBuf := bytes.NewBufferString("|")
+				for _, k := range subCol.targetTable.keys {
+					thisRowKey := keyFinder.FieldByIndex(k.fieldIndex).Interface()
+					keyBuf.WriteString(fmt.Sprint(thisRowKey))
+					keyBuf.WriteRune('|')
+				}
+				key = keyBuf.String()
+				typeKeysForRow[subV.Type()] = key
+			}
+			existingRow, exists := tableValueMap[key]
+			if !exists {
+				tableValueMap[key] = subV
+				targetV = targetV.FieldByIndex(subCol.fieldIndex)
+				targetV.Set(reflect.Append(targetV, subV))
+				// All sub-elements will already be set, so we can
+				// skip the rest of them.
+				break
+			}
+			targetV = existingRow
+		}
+	}
+	return true
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used
@@ -2035,12 +2136,14 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
-func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col string) (fieldIndex []int, err error) {
+func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col string) (fieldIndex []int, joinColumns []*ColumnMap, err error) {
 	// Simplest case: the column is mapped to a field in t.
 	if table != nil {
-		column := colMapOrNil(table, col)
+		var column *ColumnMap
+		joinColumns, column = colMapOrNil(table, col)
 		if column != nil {
-			return column.fieldIndex, nil
+			fieldIndex = column.fieldIndex
+			return
 		}
 	}
 	// Less simple case: the type has no mapping or the column is not
@@ -2054,7 +2157,8 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 		}
 		for _, option := range options {
 			if option == "embed" {
-				if index, err := fieldIndexForColumnName(m, table, field.Type, col); err == nil {
+				var index []int
+				if index, joinColumns, err = fieldIndexForColumnName(m, table, field.Type, col); err == nil {
 					fieldIndex = append(field.Index, index...)
 					return true
 				}
@@ -2073,12 +2177,19 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 	return
 }
 
-func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
-	colToFieldIndex := make([][]int, len(cols))
+type fieldMap struct {
+	index  []int
+	gotype reflect.Type
+	keys   [][]int
+}
+
+func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) (colToFieldIndex [][]int, table *TableMap, joinMaps [][]*ColumnMap, err error) {
+	colToFieldIndex = make([][]int, len(cols))
+	joinMaps = make([][]*ColumnMap, 3)
 
 	// check if type t is a mapped table - if so we'll
 	// check the table for column aliasing below
-	table := tableOrNil(m, t)
+	table = tableOrNil(m, t)
 
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
@@ -2086,20 +2197,37 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		index, err := fieldIndexForColumnName(m, table, t, colName)
+		idx, joinCols, err := fieldIndexForColumnName(m, table, t, colName)
 		if err != nil {
 			missingColNames = append(missingColNames, colName)
-		} else {
-			colToFieldIndex[x] = index
+			continue
+		}
+		colToFieldIndex[x] = idx
+		if joinCols != nil {
+			alreadyMapped := false
+			for _, m := range joinMaps {
+				for i := 0; len(m) == len(joinCols) && i < len(m); i++ {
+					alreadyMapped = joinCols[i] == m[i]
+					if !alreadyMapped {
+						break
+					}
+				}
+				if alreadyMapped {
+					break
+				}
+			}
+			if !alreadyMapped {
+				joinMaps = append(joinMaps, joinCols)
+			}
 		}
 	}
 	if len(missingColNames) > 0 {
-		return colToFieldIndex, &NoFieldInTypeError{
+		err = &NoFieldInTypeError{
 			TypeName:        t.Name(),
 			MissingColNames: missingColNames,
 		}
 	}
-	return colToFieldIndex, nil
+	return
 }
 
 func fieldByName(val reflect.Value, fieldName string) *reflect.Value {

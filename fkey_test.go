@@ -150,7 +150,7 @@ func TestBasicForeignKeyMultiSelect(t *testing.T) {
 
 func TestBasicForeignKeyConsolidatedMultiSelect(t *testing.T) {
 	dbmap := initDbMap()
-	//defer dropAndClose(dbmap)
+	defer dropAndClose(dbmap)
 
 	l := &BasicLeft{
 		Name: "foo",
@@ -195,6 +195,6 @@ func TestBasicForeignKeyConsolidatedMultiSelect(t *testing.T) {
 	}
 	loadedL := results[0].(*BasicLeft)
 	if len(loadedL.Rights) != 2 {
-		t.Errorf("Expected exactly two rights for left ID %d", l.ID)
+		t.Errorf("Expected exactly two rights for left ID %d, got %d", l.ID, len(loadedL.Rights))
 	}
 }
