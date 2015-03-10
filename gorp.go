@@ -2059,8 +2059,14 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 	for _, joinedCols := range multiJoinCols {
 		subV := v
 		targetV := rowVal
+		newColFound := false
 		for _, subCol := range joinedCols {
 			subV = subV.FieldByIndex(subCol.fieldIndex).Index(0)
+			valueMap, ok := parsedRows[subV.Type()]
+			if !ok {
+				valueMap = make(map[string]reflect.Value)
+				parsedRows[subV.Type()] = valueMap
+			}
 			key, keyCreated := typeKeysForRow[subV.Type()]
 			if !keyCreated {
 				keyFinder := subV
@@ -2076,14 +2082,17 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 				key = keyBuf.String()
 				typeKeysForRow[subV.Type()] = key
 			}
-			existingRow, exists := tableValueMap[key]
+			existingRow, exists := valueMap[key]
 			if !exists {
-				tableValueMap[key] = subV
+				valueMap[key] = subV
+				if newColFound {
+					// Sub-elements of a new column will be populated
+					// already, so skip appending.
+					continue
+				}
 				targetV = targetV.FieldByIndex(subCol.fieldIndex)
 				targetV.Set(reflect.Append(targetV, subV))
-				// All sub-elements will already be set, so we can
-				// skip the rest of them.
-				break
+				newColFound = true
 			}
 			targetV = existingRow
 		}
