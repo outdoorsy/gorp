@@ -2031,7 +2031,8 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 }
 
 func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) bool {
-	rowKeyBuf := bytes.NewBufferString("|")
+	rowKeyBuf := bytes.Buffer{}
+	rowKeyBuf.WriteRune('|')
 	for _, k := range table.keys {
 		thisRowKey := v.FieldByIndex(k.fieldIndex).Interface()
 		rowKeyBuf.WriteString(fmt.Sprint(thisRowKey))
@@ -2051,15 +2052,11 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 		return false
 	}
 
-	// Store keys to types so we don't regenerate keys if we need to
-	// check the same type multiple times.
-	typeKeysForRow := map[reflect.Type]string{
-		table.gotype: rowKey,
-	}
 	for _, joinedCols := range multiJoinCols {
 		subV := v
 		targetV := rowVal
 		newColFound := false
+		keyBuf := rowKeyBuf
 		for _, subCol := range joinedCols {
 			subV = subV.FieldByIndex(subCol.fieldIndex).Index(0)
 			valueMap, ok := parsedRows[subV.Type()]
@@ -2067,21 +2064,18 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 				valueMap = make(map[string]reflect.Value)
 				parsedRows[subV.Type()] = valueMap
 			}
-			key, keyCreated := typeKeysForRow[subV.Type()]
-			if !keyCreated {
-				keyFinder := subV
-				if keyFinder.Kind() == reflect.Ptr {
-					keyFinder = keyFinder.Elem()
-				}
-				keyBuf := bytes.NewBufferString("|")
-				for _, k := range subCol.targetTable.keys {
-					thisRowKey := keyFinder.FieldByIndex(k.fieldIndex).Interface()
-					keyBuf.WriteString(fmt.Sprint(thisRowKey))
-					keyBuf.WriteRune('|')
-				}
-				key = keyBuf.String()
-				typeKeysForRow[subV.Type()] = key
+			keyFinder := subV
+			if keyFinder.Kind() == reflect.Ptr {
+				keyFinder = keyFinder.Elem()
 			}
+			keyBuf.WriteRune('|')
+			for _, k := range subCol.targetTable.keys {
+				thisRowKey := keyFinder.FieldByIndex(k.fieldIndex).Interface()
+				keyBuf.WriteString(fmt.Sprint(thisRowKey))
+				keyBuf.WriteRune('|')
+			}
+			key := keyBuf.String()
+
 			existingRow, exists := valueMap[key]
 			if !exists {
 				valueMap[key] = subV
