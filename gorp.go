@@ -298,10 +298,14 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			if targetType.Kind() != reflect.Struct {
 				panic("Foreign keys that are not structs or pointers to structs cannot be mapped to real columns (hint: `db:\"-,fkey\"`)")
 			}
-			var err error
-			targetTable, err = t.dbmap.TableFor(targetType, true)
-			if err != nil {
-				panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s: %s", targetType.Name(), err))
+			if targetType == t.gotype {
+				targetTable = t
+			} else {
+				var err error
+				targetTable, err = t.dbmap.TableFor(targetType, true)
+				if err != nil {
+					panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s: %s", targetType.Name(), err))
+				}
 			}
 			for _, key := range targetTable.keys {
 				cm := &ColumnMap{
