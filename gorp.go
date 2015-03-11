@@ -314,12 +314,12 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 					origtype:   key.origtype,
 					gotype:     key.gotype,
 					joinAlias:  key.joinAlias,
-					references: &reference{
+					references: &Reference{
 						table:  targetTable,
 						column: key,
 					},
 				}
-				key.referencedBy = append(key.referencedBy, &reference{
+				key.referencedBy = append(key.referencedBy, &Reference{
 					table:  t,
 					column: cm,
 				})
@@ -855,7 +855,7 @@ func (t *TableMap) bindGet() bindPlan {
 	return plan
 }
 
-type reference struct {
+type Reference struct {
 	table  *TableMap
 	column *ColumnMap
 }
@@ -894,18 +894,35 @@ type ColumnMap struct {
 	isNotNull  bool
 
 	joinAlias    string
-	references   *reference
-	referencedBy []*reference
+	references   *Reference
+	referencedBy []*Reference
 }
 
 // JoinAlias returns a column name alias that can be used when
-// performing joined queries.
+// performing joined queries.  Embedded structs that map to tables
+// will prefix this to all child fields' join aliases.
 func (c *ColumnMap) JoinAlias() string {
 	return c.joinAlias
 }
 
+// SetJoinAlias sets the join alias for this column.
 func (c *ColumnMap) SetJoinAlias(alias string) {
 	c.joinAlias = alias
+}
+
+// References returns the table and column (in a *reference instance)
+// which this column references as a foreign key.
+//
+// TODO: Add setter
+func (c *ColumnMap) References() *Reference {
+	return c.references
+}
+
+// ReferencedBy returns a list of all tables and columns (in a
+// []*reference instance) which reference this column.  You cannot set
+// this value directly.
+func (c *ColumnMap) ReferencedBy() []*Reference {
+	return c.referencedBy
 }
 
 // Rename allows you to specify the column name in the table
