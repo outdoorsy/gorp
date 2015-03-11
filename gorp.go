@@ -309,7 +309,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			}
 			for _, key := range targetTable.keys {
 				cm := &ColumnMap{
-					ColumnName: fmt.Sprintf("%s_%s", targetTable.TableName, key.ColumnName),
+					ColumnName: fmt.Sprintf("%s_%s", joinAlias, key.ColumnName),
 					fieldIndex: append(f.Index, key.fieldIndex...),
 					origtype:   key.origtype,
 					gotype:     key.gotype,
@@ -857,8 +857,34 @@ func (t *TableMap) bindGet() bindPlan {
 
 // A Reference represents a foreign key relationship.
 type Reference struct {
-	table  *TableMap
-	column *ColumnMap
+	table          *TableMap
+	column         *ColumnMap
+	cascadeDeletes bool
+	cascadeUpdates bool
+}
+
+// OnDeleteCascade returns whether or not this reference will cascade
+// on deletes.  Only used during table creation.
+func (r *Reference) OnDeleteCascade() bool {
+	return r.cascadeDeletes
+}
+
+// SetOnDeleteCascade sets whether or not this reference will be
+// created with an `on delete cascade` clause.
+func (r *Reference) SetOnDeleteCascade(cascade bool) {
+	r.cascadeDeletes = cascade
+}
+
+// OnUpdateCascade returns whether or not this reference will cascade
+// on updates.  Only used during table creation.
+func (r *Reference) OnUpdateCascade() bool {
+	return r.cascadeUpdates
+}
+
+// SetOnUpdateCascade sets whether or not this reference will be
+// created with an `on update cascade` clause.
+func (r *Reference) SetOnUpdateCascade(cascade bool) {
+	r.cascadeUpdates = cascade
 }
 
 // Table returns the table that this reference points to.
@@ -1180,6 +1206,20 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				}
 				if col.Unique {
 					s.WriteString(" unique")
+				}
+				ref := col.References()
+				if ref != nil {
+					s.WriteString(" references ")
+					s.WriteString(m.Dialect.QuotedTableForQuery(ref.Table().SchemaName, ref.Table().TableName))
+					s.WriteString("(")
+					s.WriteString(m.Dialect.QuoteField(ref.Column().ColumnName))
+					s.WriteString(")")
+					if ref.OnDeleteCascade() {
+						s.WriteString(" on delete cascade")
+					}
+					if ref.OnUpdateCascade() {
+						s.WriteString(" on update cascade")
+					}
 				}
 				if col.isAutoIncr {
 					s.WriteString(fmt.Sprintf(" %s", m.Dialect.AutoIncrStr()))
