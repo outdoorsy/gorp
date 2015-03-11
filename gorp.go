@@ -309,7 +309,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			}
 			for _, key := range targetTable.keys {
 				cm := &ColumnMap{
-					ColumnName: fmt.Sprintf("%s_%s", joinAlias, key.ColumnName),
+					ColumnName: joinAlias + key.ColumnName,
 					fieldIndex: append(f.Index, key.fieldIndex...),
 					origtype:   key.origtype,
 					gotype:     key.gotype,
