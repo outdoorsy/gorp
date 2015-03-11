@@ -935,6 +935,12 @@ type ColumnMap struct {
 	referencedBy []*Reference
 }
 
+// FieldIndex returns the index (intended to be used by
+// reflect.Value.FieldByIndex) for this column within its type.
+func (c *ColumnMap) FieldIndex() []int {
+	return c.fieldIndex
+}
+
 // JoinAlias returns a column name alias that can be used when
 // performing joined queries.  Embedded structs that map to tables
 // will prefix this to all child fields' join aliases.
