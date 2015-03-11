@@ -252,7 +252,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			for _, subcol := range subcols {
 				subcol.fieldIndex = append(f.Index, subcol.fieldIndex...)
 				if fakeAnonymous {
-					subcol.fieldName = fmt.Sprintf("%s.%s", columnName, subcol.fieldName)
+					subcol.fieldName = fmt.Sprintf("%s.%s", f.Name, subcol.fieldName)
 				}
 				shouldAppend := true
 				for _, col := range cols {
