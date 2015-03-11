@@ -855,9 +855,20 @@ func (t *TableMap) bindGet() bindPlan {
 	return plan
 }
 
+// A Reference represents a foreign key relationship.
 type Reference struct {
 	table  *TableMap
 	column *ColumnMap
+}
+
+// Table returns the table that this reference points to.
+func (r *Reference) Table() *TableMap {
+	return r.table
+}
+
+// Column returns the column that this reference points to.
+func (r *Reference) Column() *ColumnMap {
+	return r.column
 }
 
 // ColumnMap represents a mapping between a Go struct field and a single
