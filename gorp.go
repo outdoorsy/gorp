@@ -209,6 +209,42 @@ type TableMap struct {
 	isManyToManyMap bool
 }
 
+func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
+	cols := make([]*ColumnMap, 0, len(col.targetTable.keys))
+	for _, key := range col.targetTable.keys {
+		cm := &ColumnMap{
+			ColumnName: col.joinAlias + key.ColumnName,
+			fieldIndex: append(col.fieldIndex, key.fieldIndex...),
+			origtype:   key.origtype,
+			gotype:     key.gotype,
+			joinAlias:  key.joinAlias,
+			references: &Reference{
+				table:  col.targetTable,
+				column: key,
+			},
+		}
+		key.referencedBy = append(key.referencedBy, &Reference{
+			table:  t,
+			column: cm,
+		})
+		cols = append(cols, cm)
+	}
+	// Check the target table for transient references to
+	// this table.
+	for _, targetCol := range col.targetTable.Columns {
+		if targetCol.Transient {
+			targetType := targetCol.gotype
+			for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
+				targetType = targetType.Elem()
+			}
+			if t.gotype == targetType {
+				targetCol.targetTable = t
+			}
+		}
+	}
+	return cols
+}
+
 func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
 	n := typ.NumField()
 	for i := 0; i < n; i++ {
@@ -322,6 +358,9 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			origtype:    origtype,
 			gotype:      gotype,
 		}
+		if targetTable != nil && targetTable != t {
+			cols = append(cols, t.fkeyColumns(cm)...)
+		}
 		// Check for nested fields of the same field name and
 		// override them.
 		shouldAppend := true
@@ -337,45 +376,6 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 		}
 		if cm.fieldName == "Version" {
 			version = cm
-		}
-	}
-	// Map foreign key columns after mapping all other columns.  This
-	// is mainly in case the table includes self-referencing foreign
-	// keys.
-	for _, col := range cols {
-		if col.targetTable == nil {
-			continue
-		}
-		for _, key := range col.targetTable.keys {
-			cm := &ColumnMap{
-				ColumnName: col.joinAlias + key.ColumnName,
-				fieldIndex: append(col.fieldIndex, key.fieldIndex...),
-				origtype:   key.origtype,
-				gotype:     key.gotype,
-				joinAlias:  key.joinAlias,
-				references: &Reference{
-					table:  col.targetTable,
-					column: key,
-				},
-			}
-			key.referencedBy = append(key.referencedBy, &Reference{
-				table:  t,
-				column: cm,
-			})
-			cols = append(cols, cm)
-		}
-		// Check the target table for transient references to
-		// this table.
-		for _, targetCol := range col.targetTable.Columns {
-			if targetCol.Transient {
-				targetType := targetCol.gotype
-				for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
-					targetType = targetType.Elem()
-				}
-				if t.gotype == targetType {
-					targetCol.targetTable = t
-				}
-			}
 		}
 	}
 	return
@@ -490,12 +490,21 @@ func (t *TableMap) SetKeys(isAutoIncr bool, fields ...interface{}) *TableMap {
 			"gorp: SetKeys: fields length must be 1 if key is auto-increment. (Saw %v fieldNames)",
 			len(fields)))
 	}
+	if len(t.keys) > 0 {
+		panic("gorp: SetKeys: cannot call SetKeys more than once")
+	}
 	t.keys = make([]*ColumnMap, 0, len(fields))
 	for _, field := range fields {
 		colmap := t.ColMap(field)
 		colmap.isPK = true
 		colmap.isAutoIncr = isAutoIncr
 		t.keys = append(t.keys, colmap)
+	}
+	// Update self-referential foreign keys
+	for _, col := range t.Columns {
+		if col.targetTable == t {
+			t.Columns = append(t.Columns, t.fkeyColumns(col)...)
+		}
 	}
 	t.ResetSql()
 
