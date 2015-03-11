@@ -307,37 +307,6 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 					panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s: %s", targetType.Name(), err))
 				}
 			}
-			for _, key := range targetTable.keys {
-				cm := &ColumnMap{
-					ColumnName: joinAlias + key.ColumnName,
-					fieldIndex: append(f.Index, key.fieldIndex...),
-					origtype:   key.origtype,
-					gotype:     key.gotype,
-					joinAlias:  key.joinAlias,
-					references: &Reference{
-						table:  targetTable,
-						column: key,
-					},
-				}
-				key.referencedBy = append(key.referencedBy, &Reference{
-					table:  t,
-					column: cm,
-				})
-				cols = append(cols, cm)
-			}
-			// Check the target table for transient references to
-			// this table.
-			for _, targetCol := range targetTable.Columns {
-				if targetCol.Transient {
-					targetType := targetCol.gotype
-					for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
-						targetType = targetType.Elem()
-					}
-					if t.gotype == targetType {
-						targetCol.targetTable = t
-					}
-				}
-			}
 			// We want to include the parent field in the list of
 			// columns, but not map it to an actual database column.
 			columnName = "-"
@@ -368,6 +337,45 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 		}
 		if cm.fieldName == "Version" {
 			version = cm
+		}
+	}
+	// Map foreign key columns after mapping all other columns.  This
+	// is mainly in case the table includes self-referencing foreign
+	// keys.
+	for _, col := range cols {
+		if col.targetTable == nil {
+			continue
+		}
+		for _, key := range col.targetTable.keys {
+			cm := &ColumnMap{
+				ColumnName: col.joinAlias + key.ColumnName,
+				fieldIndex: append(col.fieldIndex, key.fieldIndex...),
+				origtype:   key.origtype,
+				gotype:     key.gotype,
+				joinAlias:  key.joinAlias,
+				references: &Reference{
+					table:  col.targetTable,
+					column: key,
+				},
+			}
+			key.referencedBy = append(key.referencedBy, &Reference{
+				table:  t,
+				column: cm,
+			})
+			cols = append(cols, cm)
+		}
+		// Check the target table for transient references to
+		// this table.
+		for _, targetCol := range col.targetTable.Columns {
+			if targetCol.Transient {
+				targetType := targetCol.gotype
+				for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
+					targetType = targetType.Elem()
+				}
+				if t.gotype == targetType {
+					targetCol.targetTable = t
+				}
+			}
 		}
 	}
 	return
