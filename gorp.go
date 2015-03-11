@@ -2000,7 +2000,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		}
 
 		shouldAppend := true
-		if multiJoinCols != nil {
+		if multiJoinCols != nil && table != nil {
 			// There are slice elements in the type that are being
 			// filled out by values in the query.  This means the
 			// select is probably a many-to-many or one-to-many join

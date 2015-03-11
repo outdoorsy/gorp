@@ -40,15 +40,6 @@ type MtoMThreeMapper struct {
 	Rank      int
 }
 
-// dbmap.AddTableWithName(BasicLeft{}, "basic_left").SetKeys(true, "ID")
-// r := BasicRight{}
-// dbmap.AddTableWithName(&r, "basic_right").SetKeys(true, &r.ID)
-// mainTable := dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
-// dbmap.AddTableWithName(MtoMTwo{}, "many_to_many_two").SetKeys(true, "ID")
-// mainTable.ManyToMany(MtoMTwo{})
-// mainTable.ManyToManyWithName(MtoMThreeMapper{}, "one_three_map").SetKeys(true, "MapID")
-// dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
-
 func TestBasicForeignKeySimpleGet(t *testing.T) {
 	dbmap := initDbMap()
 	defer dropAndClose(dbmap)

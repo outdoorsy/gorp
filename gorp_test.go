@@ -726,7 +726,7 @@ func TestOverrideVersionCol(t *testing.T) {
 	}
 	defer dropAndClose(dbmap)
 	c1 := t1.SetVersionCol("LegacyVersion")
-	if c1.ColumnName != "LegacyVersion" {
+	if c1.ColumnName != "legacyversion" {
 		t.Errorf("Wrong col returned: %v", c1)
 	}
 
