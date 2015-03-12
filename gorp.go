@@ -628,7 +628,7 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 		if isUpdatedVersField {
 			k = plan.versField
 		}
-		field := fieldByIndex(elem, k, false)
+		field, _ := fieldByIndex(elem, k, false)
 		if isUpdatedVersField {
 			newVer := bi.existingVersion + 1
 			bi.args = append(bi.args, newVer)
@@ -645,7 +645,8 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 	}
 
 	for _, k := range plan.keyFields {
-		val := fieldByIndex(elem, k, false).Interface()
+		field, _ := fieldByIndex(elem, k, false)
+		val := field.Interface()
 		if conv != nil {
 			val, err = conv.ToDb(val)
 			if err != nil {
@@ -1939,20 +1940,25 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 // 1. If initialize is true, it will initialize pointers that it
 // descends through, sidestepping the "indirection through nil pointer
 // to embedded struct" error.
-// 2. When it descends through a pointer to a struct, it will return
-// the target field's address.
-// 2. If initialize is false and it finds a nil pointer, it will
+//
+// 2. If initialize is true and it descends through a pointer to a
+// struct and returns a non-pointer field, it will also return a
+// custom scanner that will set the nearest struct pointer to nil if
+// the database value is nil, instead of trying to scan a nil value to
+// a non-nil field.
+//
+// 3. If initialize is false and it finds a nil pointer, it will
 // return nil rather than panicking.
-func fieldByIndex(v reflect.Value, index []int, initialize bool) reflect.Value {
-	foundPtr := false
+func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value, *CustomScanner) {
+	var lastPtr reflect.Value
 	for i, idx := range index {
 		if v.Kind() == reflect.Ptr {
 			if i > 0 {
-				foundPtr = true
+				lastPtr = v
 			}
 			if v.IsNil() {
 				if !initialize {
-					return v
+					return v, nil
 				}
 				v.Set(reflect.New(v.Type().Elem()))
 			}
@@ -1976,10 +1982,23 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) reflect.Value {
 			panic("gorp: found unsupported type using fieldByIndex")
 		}
 	}
-	if foundPtr {
-		v = v.Addr()
+	var scanner *CustomScanner
+	if initialize && lastPtr.IsValid() && lastPtr.Elem() != v {
+		holder := reflect.New(v.Addr().Type()).Elem()
+		scanner = &CustomScanner{
+			Holder: holder,
+			Target: v.Addr().Interface(),
+			Binder: func(interface{}, interface{}) error {
+				if holder.IsNil() {
+					lastPtr.Set(reflect.Zero(lastPtr.Type()))
+					return nil
+				}
+				v.Set(holder.Elem())
+				return nil
+			},
+		}
 	}
-	return v
+	return v, scanner
 }
 
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
@@ -2085,7 +2104,12 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 					dest[x] = &dummy
 					continue
 				}
-				f = fieldByIndex(f, index, true)
+				var scan *CustomScanner
+				f, scan = fieldByIndex(f, index, true)
+				if scan != nil {
+					f = scan.Holder.(reflect.Value)
+					custScan = append(custScan, *scan)
+				}
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
@@ -2422,7 +2446,12 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	custScan := make([]CustomScanner, 0)
 
 	for x, fieldIdx := range plan.argFields {
-		f := fieldByIndex(v, fieldIdx, true)
+		var scan *CustomScanner
+		f, scan := fieldByIndex(v, fieldIdx, true)
+		if scan != nil {
+			f = scan.Holder.(reflect.Value)
+			custScan = append(custScan, *scan)
+		}
 		target := f.Addr().Interface()
 		if conv != nil {
 			scanner, ok := conv.FromDb(target)
