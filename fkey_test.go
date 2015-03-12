@@ -78,7 +78,7 @@ func TestBasicForeignKeySimpleGet(t *testing.T) {
 
 func TestBasicForeignKeyMultiSelect(t *testing.T) {
 	dbmap := initDbMap()
-	//defer dropAndClose(dbmap)
+	defer dropAndClose(dbmap)
 
 	l := &BasicLeft{
 		Name: "foo",
