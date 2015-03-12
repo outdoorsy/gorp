@@ -232,7 +232,7 @@ func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
 	// Check the target table for transient references to
 	// this table.
 	for _, targetCol := range col.targetTable.Columns {
-		if targetCol.Transient {
+		if targetCol.Transient && targetCol.isReference {
 			targetType := targetCol.gotype
 			for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
 				targetType = targetType.Elem()
@@ -357,6 +357,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			targetTable: targetTable,
 			origtype:    origtype,
 			gotype:      gotype,
+			isReference: fkey,
 		}
 		if targetTable != nil && targetTable != t {
 			cols = append(cols, t.fkeyColumns(cm)...)
@@ -948,9 +949,18 @@ type ColumnMap struct {
 	isAutoIncr bool
 	isNotNull  bool
 
+	// isReference is used for transient references, to differentiate
+	// them from normal transient fields.
+	isReference  bool
 	joinAlias    string
 	references   *Reference
 	referencedBy []*Reference
+}
+
+// TargetTable returns the *TableMap that this column represents, for
+// foreign key fields.
+func (c *ColumnMap) TargetTable() *TableMap {
+	return c.targetTable
 }
 
 // FieldIndex returns the index (intended to be used by
