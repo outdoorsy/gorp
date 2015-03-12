@@ -128,7 +128,7 @@ type MigrationManager struct {
 func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 	l := make([]columnLayout, 0, len(t.Columns))
 	for _, colMap := range t.Columns {
-		if colMap.ColumnName == "-" {
+		if colMap.Transient {
 			continue
 		}
 		var stype string
