@@ -628,7 +628,7 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 		if isUpdatedVersField {
 			k = plan.versField
 		}
-		field := fieldByIndex(elem, k)
+		field := fieldByIndex(elem, k, false)
 		if isUpdatedVersField {
 			newVer := bi.existingVersion + 1
 			bi.args = append(bi.args, newVer)
@@ -645,7 +645,7 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 	}
 
 	for _, k := range plan.keyFields {
-		val := fieldByIndex(elem, k).Interface()
+		val := fieldByIndex(elem, k, false).Interface()
 		if conv != nil {
 			val, err = conv.ToDb(val)
 			if err != nil {
@@ -1933,14 +1933,27 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
-// fieldByIndex is a copy of v.FieldByIndex, except that it will
-// initialize nil pointers while descending the indexes.  It also will
-// descend into slices and arrays, so slice/array indexes can be used
-// in index.
-func fieldByIndex(v reflect.Value, index []int) reflect.Value {
-	for _, idx := range index {
+// fieldByIndex is a copy of v.FieldByIndex, with the following
+// changes:
+//
+// 1. If initialize is true, it will initialize pointers that it
+// descends through, sidestepping the "indirection through nil pointer
+// to embedded struct" error.
+// 2. When it descends through a pointer to a struct, it will return
+// the target field's address.
+// 2. If initialize is false and it finds a nil pointer, it will
+// return nil rather than panicking.
+func fieldByIndex(v reflect.Value, index []int, initialize bool) reflect.Value {
+	foundPtr := false
+	for i, idx := range index {
 		if v.Kind() == reflect.Ptr {
+			if i > 0 {
+				foundPtr = true
+			}
 			if v.IsNil() {
+				if !initialize {
+					return v
+				}
 				v.Set(reflect.New(v.Type().Elem()))
 			}
 			v = v.Elem()
@@ -1962,6 +1975,9 @@ func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 		default:
 			panic("gorp: found unsupported type using fieldByIndex")
 		}
+	}
+	if foundPtr {
+		v = v.Addr()
 	}
 	return v
 }
@@ -2069,7 +2085,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 					dest[x] = &dummy
 					continue
 				}
-				f = fieldByIndex(f, index)
+				f = fieldByIndex(f, index, true)
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
@@ -2406,7 +2422,7 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	custScan := make([]CustomScanner, 0)
 
 	for x, fieldIdx := range plan.argFields {
-		f := fieldByIndex(v, fieldIdx)
+		f := fieldByIndex(v, fieldIdx, true)
 		target := f.Addr().Interface()
 		if conv != nil {
 			scanner, ok := conv.FromDb(target)
