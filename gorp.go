@@ -205,8 +205,6 @@ type TableMap struct {
 	deletePlan     bindPlan
 	getPlan        bindPlan
 	dbmap          *DbMap
-
-	isManyToManyMap bool
 }
 
 func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
@@ -382,19 +380,15 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 	return
 }
 
-// ManyToMany sets up a many-to-many mapping between t and a field on
-// t, using a mapping table.  It will automatically set up foreign
-// keys on the mapping table it generates.  If you need to add some
-// fields to the mapping table (like sort ranks or minor details that
-// only apply to the mapping of a single row in t to a single row in
-// the target table), you may define your own mapping type; for
-// example:
+// ManyToMany uses a field on t's type as a many-to-many mapping table
+// between t and another table.  For example:
 //
 //     type Icon struct {
 //         ID int
 //     }
 //
 //     type UserIcon struct {
+//         IconMapID `db:"id"`
 //         Icon `db:",fkey"` // Alternatively, `Icon *Icon` `db:",fkey"`
 //         User *User `db:",fkey"`
 //         SortRank int `db:"sort_rank"`
@@ -411,36 +405,21 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 //         ManyToMany("Icons").SetKeys(true, "IconMapID")
 //
 // It's important to note that UserIcon was never mapped to the
-// database directly.  If the field's element type is mapped by
-// dbMap.AddTable, ManyToMany will create a new mapping table between
-// t and the field's element type, instead of using that type as the
-// mapping table.
-//
-// As long as the field's element type gets mapped by ManyToMany, it
-// will always be used as a mapping table in any other calls to
-// ManyToMany (e.g. if you have more than one type mapped to the same
-// table and you need the many-to-many relationship on more than one
-// of those mappings).
-//
-// By default, foreign key fields will be given column names
-// equivalent to prefixing each primary key field on the target table
-// with the table's name and an underscore.  In the example above,
-// Icon would be given a column name of "icon_id".  If the target
-// table has exactly one primary key, then you may include a column
-// name in the "db" tag to use for the foreign key column.
-//
-// Panics if the field's type is not a slice of structs or pointers to
-// structs, or if no table can be found to map to, or if a column name
-// is provided for a foreign key field that maps to a table with more
-// than one primary key.
+// database directly.  Really, this method doesn't do much more than
+// calling AddTable and then ensuring that the table mapping has
+// foreign keys pointing to t.
 func (t *TableMap) ManyToMany(field interface{}) *TableMap {
 	return t.ManyToManyWithNameAndSchema(field, "", "")
 }
 
+// ManyToManyWithName performs the same actions as ManyToMany, but
+// with a table name for the mapping table.
 func (t *TableMap) ManyToManyWithName(field interface{}, tablename string) *TableMap {
 	return t.ManyToManyWithNameAndSchema(field, "", tablename)
 }
 
+// ManyToManyWithNameAndSchema performs the same actions as
+// ManyToMany, but with a table and schema name for the mapping table.
 func (t *TableMap) ManyToManyWithNameAndSchema(mapperType interface{}, schemaname, tablename string) *TableMap {
 	targetType := reflect.TypeOf(mapperType)
 	if targetType.Kind() == reflect.Ptr {
