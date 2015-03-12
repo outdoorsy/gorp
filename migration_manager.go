@@ -325,7 +325,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 				}
 				break
 			}
-			if oldCol.FieldName == newCol.FieldName {
+			if oldCol.FieldName != "" && oldCol.FieldName == newCol.FieldName {
 				found = true
 				oldQuotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
 				sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + oldQuotedColumn + " TO " + quotedColumn
