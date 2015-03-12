@@ -6,10 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/ziutek/mymysql/godrv"
 	"log"
 	"math/rand"
 	"os"
@@ -17,6 +13,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/ziutek/mymysql/godrv"
 )
 
 // verify interface compliance
@@ -725,7 +726,7 @@ func TestOverrideVersionCol(t *testing.T) {
 	}
 	defer dropAndClose(dbmap)
 	c1 := t1.SetVersionCol("LegacyVersion")
-	if c1.ColumnName != "LegacyVersion" {
+	if c1.ColumnName != "legacyversion" {
 		t.Errorf("Wrong col returned: %v", c1)
 	}
 
@@ -1931,6 +1932,16 @@ func initDbMap() *DbMap {
 	dbmap.AddTableWithName(WithEmbeddedStructBeforeAutoincrField{}, "embedded_struct_before_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedAutoincr{}, "embedded_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithTime{}, "time_test").SetKeys(true, "Id")
+
+	// tables with foreign keys
+	dbmap.AddTableWithName(BasicLeft{}, "basic_left").SetKeys(true, "ID")
+	r := BasicRight{}
+	dbmap.AddTableWithName(&r, "basic_right").SetKeys(true, &r.ID)
+	mainTable := dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
+	dbmap.AddTableWithName(MtoMThree{}, "many_to_many_three").SetKeys(true, "ID")
+	mainTable.ManyToManyWithName(MtoMThreeMapper{}, "one_three_map").SetKeys(true, "MapID")
+	dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
+
 	dbmap.TypeConverter = testTypeConverter{}
 	err := dbmap.DropTablesIfExists()
 	if err != nil {

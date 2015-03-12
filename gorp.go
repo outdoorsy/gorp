@@ -23,6 +23,8 @@ import (
 	"time"
 )
 
+const sliceIndexPlaceholder = -1
+
 // TypeDeffer is any type that can be used as a column value in the database.
 // This is mainly provided for table creation purposes.  You should use
 // "database/sql".Scanner and "database/sql/driver".Valuer (or a TypeConverter)
@@ -192,8 +194,10 @@ type TableMap struct {
 	TableName      string
 	SchemaName     string
 	gotype         reflect.Type
+	refval         reflect.Value
 	Columns        []*ColumnMap
 	keys           []*ColumnMap
+	fkeys          []*ColumnMap
 	uniqueTogether [][]string
 	version        *ColumnMap
 	insertPlan     bindPlan
@@ -201,6 +205,245 @@ type TableMap struct {
 	deletePlan     bindPlan
 	getPlan        bindPlan
 	dbmap          *DbMap
+}
+
+func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
+	cols := make([]*ColumnMap, 0, len(col.targetTable.keys))
+	for _, key := range col.targetTable.keys {
+		cm := &ColumnMap{
+			ColumnName: col.joinAlias + key.ColumnName,
+			fieldIndex: append(col.fieldIndex, key.fieldIndex...),
+			origtype:   key.origtype,
+			gotype:     key.gotype,
+			joinAlias:  key.joinAlias,
+			references: &Reference{
+				table:  col.targetTable,
+				column: key,
+			},
+		}
+		key.referencedBy = append(key.referencedBy, &Reference{
+			table:  t,
+			column: cm,
+		})
+		cols = append(cols, cm)
+	}
+	// Check the target table for transient references to
+	// this table.
+	for _, targetCol := range col.targetTable.Columns {
+		if targetCol.Transient && targetCol.isReference {
+			targetType := targetCol.gotype
+			for targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Array || targetType.Kind() == reflect.Slice {
+				targetType = targetType.Elem()
+			}
+			if t.gotype == targetType {
+				targetCol.targetTable = t
+			}
+		}
+	}
+	return cols
+}
+
+func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
+	n := typ.NumField()
+	for i := 0; i < n; i++ {
+		f := typ.Field(i)
+		var (
+			columnName string
+			options    []string
+		)
+		fakeAnonymous := false
+		fkey := false
+		joinAlias := ""
+		// Find the name and options now, in case the field needs to *act*
+		// as if it's embedded.
+		columnName, options = t.dbmap.columnNameAndOptions(f)
+		for _, option := range options {
+			if option == "embed" {
+				fakeAnonymous = true
+			}
+			if option == "fkey" {
+				fkey = true
+			}
+			if strings.HasPrefix(option, "join") {
+				splitIdx := strings.IndexRune(option, '=')
+				if splitIdx > 0 {
+					joinAlias = option[splitIdx+1:]
+				}
+			}
+		}
+		if fakeAnonymous && fkey {
+			panic("Fields cannot be embedded into the parent table and used as foreign keys at the same time.")
+		}
+		var fv reflect.Value
+		if v.Kind() != reflect.Invalid {
+			fv = v.Field(i)
+		}
+		if (f.Anonymous || fakeAnonymous) && f.Type.Kind() == reflect.Struct && !fkey {
+			// Recursively add nested fields in embedded structs.
+			subcols, subversion := t.readStructColumns(fv, f.Type)
+			// Don't append nested fields that have the same field
+			// name as an already-mapped field.
+			for _, subcol := range subcols {
+				subcol.fieldIndex = append(f.Index, subcol.fieldIndex...)
+				if fakeAnonymous {
+					subcol.fieldName = fmt.Sprintf("%s.%s", f.Name, subcol.fieldName)
+				}
+				shouldAppend := true
+				for _, col := range cols {
+					if shouldAppend = subcol.fieldName != col.fieldName || subcol.Transient; !shouldAppend {
+						break
+					}
+				}
+				if shouldAppend {
+					cols = append(cols, subcol)
+				}
+			}
+			if subversion != nil {
+				version = subversion
+			}
+			continue
+		}
+		origtype := f.Type
+		gotype := origtype
+		if t.dbmap.TypeConverter != nil {
+			// Make a new pointer to a value of type gotype and
+			// pass it to the TypeConverter's FromDb method to see
+			// if a different type should be used for the column
+			// type during table creation.
+			value := reflect.New(gotype).Interface()
+			scanner, useHolder := t.dbmap.TypeConverter.FromDb(value)
+			if useHolder {
+				gotype = reflect.TypeOf(scanner.Holder)
+			}
+		}
+		var fieldRef interface{}
+		if fv.IsValid() && t.refval.IsValid() {
+			fieldRef = fv.Addr().Interface()
+		}
+		var targetTable *TableMap
+		// transient foreign keys are intended to be available for
+		// populating during a joined query, but should not be mapped
+		// to a column.
+		if fkey && columnName != "-" {
+			targetType := f.Type
+			if targetType.Kind() == reflect.Ptr {
+				targetType = targetType.Elem()
+			}
+			if targetType.Kind() != reflect.Struct {
+				panic("Foreign keys that are not structs or pointers to structs cannot be mapped to real columns (hint: `db:\"-,fkey\"`)")
+			}
+			if targetType == t.gotype {
+				targetTable = t
+			} else {
+				var err error
+				targetTable, err = t.dbmap.TableFor(targetType, true)
+				if err != nil {
+					panic(fmt.Errorf("Could not find previously mapped table for foreign key type %s: %s", targetType.Name(), err))
+				}
+			}
+			// We want to include the parent field in the list of
+			// columns, but not map it to an actual database column.
+			columnName = "-"
+		}
+		cm := &ColumnMap{
+			ColumnName:  columnName,
+			Transient:   columnName == "-",
+			fieldName:   f.Name,
+			fieldIndex:  f.Index,
+			fieldRef:    fieldRef,
+			joinAlias:   joinAlias,
+			targetTable: targetTable,
+			origtype:    origtype,
+			gotype:      gotype,
+			isReference: fkey,
+		}
+		if targetTable != nil && targetTable != t {
+			cols = append(cols, t.fkeyColumns(cm)...)
+		}
+		// Check for nested fields of the same field name and
+		// override them.
+		shouldAppend := true
+		for index, col := range cols {
+			if !col.Transient && col.fieldName == cm.fieldName {
+				cols[index] = cm
+				shouldAppend = false
+				break
+			}
+		}
+		if shouldAppend {
+			cols = append(cols, cm)
+		}
+		if cm.fieldName == "Version" {
+			version = cm
+		}
+	}
+	return
+}
+
+// ManyToMany uses a field on t's type as a many-to-many mapping table
+// between t and another table.  For example:
+//
+//     type Icon struct {
+//         ID int
+//     }
+//
+//     type UserIcon struct {
+//         IconMapID `db:"id"`
+//         Icon `db:",fkey"` // Alternatively, `Icon *Icon` `db:",fkey"`
+//         User *User `db:",fkey"`
+//         SortRank int `db:"sort_rank"`
+//         Primary bool
+//     }
+//
+//     type User struct {
+//         ID int
+//         Icons []*UserIcon `db:",fkey"`
+//     }
+//
+//     dbMap.AddTable(Icon{}).SetKeys(true, "ID")
+//     dbMap.AddTable(User{}).SetKeys(true, "ID").
+//         ManyToMany("Icons").SetKeys(true, "IconMapID")
+//
+// It's important to note that UserIcon was never mapped to the
+// database directly.  Really, this method doesn't do much more than
+// calling AddTable and then ensuring that the table mapping has
+// foreign keys pointing to t.
+func (t *TableMap) ManyToMany(field interface{}) *TableMap {
+	return t.ManyToManyWithNameAndSchema(field, "", "")
+}
+
+// ManyToManyWithName performs the same actions as ManyToMany, but
+// with a table name for the mapping table.
+func (t *TableMap) ManyToManyWithName(field interface{}, tablename string) *TableMap {
+	return t.ManyToManyWithNameAndSchema(field, "", tablename)
+}
+
+// ManyToManyWithNameAndSchema performs the same actions as
+// ManyToMany, but with a table and schema name for the mapping table.
+func (t *TableMap) ManyToManyWithNameAndSchema(mapperType interface{}, schemaname, tablename string) *TableMap {
+	targetType := reflect.TypeOf(mapperType)
+	if targetType.Kind() == reflect.Ptr {
+		targetType = targetType.Elem()
+	}
+	targetTable, err := t.dbmap.TableFor(targetType, true)
+	if err == nil {
+		panic("Cannot use already mapped type as mapping table")
+	}
+	// Try to use targetType as the mapping table.
+	targetTable = t.dbmap.AddTableWithNameAndSchema(mapperType, schemaname, tablename)
+	keysFound := false
+	for _, fkey := range targetTable.fkeys {
+		if fkey.references.table == t {
+			keysFound = true
+			break
+		}
+	}
+	if !keysFound {
+		msg := "Could not find a field in type %s referencing type %s"
+		err = fmt.Errorf(msg, targetType.Name(), t.gotype.Name())
+		panic(err)
+	}
+	return targetTable
 }
 
 // ResetSql removes cached insert/update/select/delete SQL strings
@@ -221,18 +464,27 @@ func (t *TableMap) ResetSql() {
 //
 // Panics if isAutoIncr is true, and fieldNames length != 1
 //
-func (t *TableMap) SetKeys(isAutoIncr bool, fieldNames ...string) *TableMap {
-	if isAutoIncr && len(fieldNames) != 1 {
+func (t *TableMap) SetKeys(isAutoIncr bool, fields ...interface{}) *TableMap {
+	if isAutoIncr && len(fields) != 1 {
 		panic(fmt.Sprintf(
-			"gorp: SetKeys: fieldNames length must be 1 if key is auto-increment. (Saw %v fieldNames)",
-			len(fieldNames)))
+			"gorp: SetKeys: fields length must be 1 if key is auto-increment. (Saw %v fieldNames)",
+			len(fields)))
 	}
-	t.keys = make([]*ColumnMap, 0)
-	for _, name := range fieldNames {
-		colmap := t.ColMap(name)
+	if len(t.keys) > 0 {
+		panic("gorp: SetKeys: cannot call SetKeys more than once")
+	}
+	t.keys = make([]*ColumnMap, 0, len(fields))
+	for _, field := range fields {
+		colmap := t.ColMap(field)
 		colmap.isPK = true
 		colmap.isAutoIncr = isAutoIncr
 		t.keys = append(t.keys, colmap)
+	}
+	// Update self-referential foreign keys
+	for _, col := range t.Columns {
+		if col.targetTable == t {
+			t.Columns = append(t.Columns, t.fkeyColumns(col)...)
+		}
 	}
 	t.ResetSql()
 
@@ -266,10 +518,10 @@ func (t *TableMap) SetUniqueTogether(fieldNames ...string) *TableMap {
 // ColMap returns the ColumnMap pointer matching the given struct field
 // name.  It panics if the struct does not contain a field matching this
 // name.
-func (t *TableMap) ColMap(field string) *ColumnMap {
-	col := colMapOrNil(t, field)
+func (t *TableMap) ColMap(field interface{}) *ColumnMap {
+	_, col := colMapOrNil(t, field)
 	if col == nil {
-		e := fmt.Sprintf("No ColumnMap in table %s type %s with field %s",
+		e := fmt.Sprintf("No ColumnMap in table %s type %s with field %v",
 			t.TableName, t.gotype.Name(), field)
 
 		panic(e)
@@ -277,13 +529,38 @@ func (t *TableMap) ColMap(field string) *ColumnMap {
 	return col
 }
 
-func colMapOrNil(t *TableMap, field string) *ColumnMap {
+func colMapOrNil(t *TableMap, field interface{}) (multiJoinColumns []*ColumnMap, column *ColumnMap) {
+	fieldName, isStr := field.(string)
 	for _, col := range t.Columns {
-		if col.fieldName == field || col.ColumnName == field {
-			return col
+		if isStr {
+			if col.targetTable != nil && strings.HasPrefix(fieldName, col.JoinAlias()) {
+				// This field may belong to a field within col's type.
+				subMultiJoins, subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinAlias()):])
+				if subcol != nil {
+					multiJoinColumns = subMultiJoins
+					// We need to return a copy of subcol, but with
+					// its fieldIndex updated to include col's
+					// fieldIndex
+					subcolCopy := new(ColumnMap)
+					*subcolCopy = *subcol
+					index := col.fieldIndex
+					if col.gotype.Kind() == reflect.Slice || col.gotype.Kind() == reflect.Array {
+						index = append(index, sliceIndexPlaceholder)
+						multiJoinColumns = append([]*ColumnMap{col}, multiJoinColumns...)
+					}
+					subcolCopy.fieldIndex = append(index, subcolCopy.fieldIndex...)
+					column = subcolCopy
+					return
+				}
+			}
+			if col.fieldName == fieldName || col.ColumnName == fieldName || col.JoinAlias() == fieldName {
+				return nil, col
+			}
+		} else if col.fieldRef == field {
+			return nil, col
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // SetVersionCol sets the column to use as the Version field.  By default
@@ -310,46 +587,46 @@ func dbValue(value interface{}, conv TypeConverter) (interface{}, error) {
 }
 
 type bindPlan struct {
-	query             string
-	argFields         []string
-	keyFields         []string
-	versField         string
-	autoIncrIdx       int
-	autoIncrFieldName string
+	query            string
+	argFields        [][]int
+	keyFields        [][]int
+	versField        []int
+	autoIncrIdx      int
+	autoIncrFieldIdx []int
 }
 
 func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) (bindInstance, error) {
-	bi := bindInstance{query: plan.query, autoIncrIdx: plan.autoIncrIdx, autoIncrFieldName: plan.autoIncrFieldName, versField: plan.versField}
-	if plan.versField != "" {
-		bi.existingVersion = elem.FieldByName(plan.versField).Int()
+	bi := bindInstance{query: plan.query, autoIncrIdx: plan.autoIncrIdx, autoIncrFieldIdx: plan.autoIncrFieldIdx, versField: plan.versField}
+	if plan.versField != nil {
+		bi.existingVersion = elem.FieldByIndex(plan.versField).Int()
 	}
 
 	var err error
 
-	for i := 0; i < len(plan.argFields); i++ {
-		k := plan.argFields[i]
-		if k == versFieldConst {
+	for _, k := range plan.argFields {
+		isUpdatedVersField := k == nil
+		if isUpdatedVersField {
+			k = plan.versField
+		}
+		field, _ := fieldByIndex(elem, k, false)
+		if isUpdatedVersField {
 			newVer := bi.existingVersion + 1
 			bi.args = append(bi.args, newVer)
 			if bi.existingVersion == 0 {
-				elem.FieldByName(plan.versField).SetInt(int64(newVer))
+				field.SetInt(int64(newVer))
 			}
-		} else {
-			current := elem
-			for _, name := range strings.Split(k, ".") {
-				current = current.FieldByName(name)
-			}
-			val, err := dbValue(current.Interface(), conv)
-			if err != nil {
-				return bindInstance{}, err
-			}
-			bi.args = append(bi.args, val)
+			continue
 		}
+		val, err := dbValue(field.Interface(), conv)
+		if err != nil {
+			return bindInstance{}, err
+		}
+		bi.args = append(bi.args, val)
 	}
 
-	for i := 0; i < len(plan.keyFields); i++ {
-		k := plan.keyFields[i]
-		val := elem.FieldByName(k).Interface()
+	for _, k := range plan.keyFields {
+		field, _ := fieldByIndex(elem, k, false)
+		val := field.Interface()
 		if conv != nil {
 			val, err = conv.ToDb(val)
 			if err != nil {
@@ -363,13 +640,13 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 }
 
 type bindInstance struct {
-	query             string
-	args              []interface{}
-	keys              []interface{}
-	existingVersion   int64
-	versField         string
-	autoIncrIdx       int
-	autoIncrFieldName string
+	query            string
+	args             []interface{}
+	keys             []interface{}
+	existingVersion  int64
+	versField        []int
+	autoIncrIdx      int
+	autoIncrFieldIdx []int
 }
 
 func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
@@ -396,23 +673,22 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 					if col.isAutoIncr {
 						s2.WriteString(t.dbmap.Dialect.AutoIncrBindValue())
 						plan.autoIncrIdx = y
-						plan.autoIncrFieldName = col.fieldName
+						plan.autoIncrFieldIdx = col.fieldIndex
 					} else {
 						s2.WriteString(t.dbmap.Dialect.BindVar(x))
 						if col == t.version {
-							plan.versField = col.fieldName
-							plan.argFields = append(plan.argFields, versFieldConst)
+							plan.versField = col.fieldIndex
+							plan.argFields = append(plan.argFields, nil)
 						} else {
-							plan.argFields = append(plan.argFields, col.fieldName)
+							plan.argFields = append(plan.argFields, col.fieldIndex)
 						}
-
 						x++
 					}
 					first = false
 				}
 			} else {
 				plan.autoIncrIdx = y
-				plan.autoIncrFieldName = col.fieldName
+				plan.autoIncrFieldIdx = col.fieldIndex
 			}
 		}
 		s.WriteString(") values (")
@@ -449,10 +725,10 @@ func (t *TableMap) bindUpdate(elem reflect.Value) (bindInstance, error) {
 				s.WriteString(t.dbmap.Dialect.BindVar(x))
 
 				if col == t.version {
-					plan.versField = col.fieldName
-					plan.argFields = append(plan.argFields, versFieldConst)
+					plan.versField = col.fieldIndex
+					plan.argFields = append(plan.argFields, nil)
 				} else {
-					plan.argFields = append(plan.argFields, col.fieldName)
+					plan.argFields = append(plan.argFields, col.fieldIndex)
 				}
 				x++
 			}
@@ -468,11 +744,11 @@ func (t *TableMap) bindUpdate(elem reflect.Value) (bindInstance, error) {
 			s.WriteString("=")
 			s.WriteString(t.dbmap.Dialect.BindVar(x))
 
-			plan.argFields = append(plan.argFields, col.fieldName)
-			plan.keyFields = append(plan.keyFields, col.fieldName)
+			plan.argFields = append(plan.argFields, col.fieldIndex)
+			plan.keyFields = append(plan.keyFields, col.fieldIndex)
 			x++
 		}
-		if plan.versField != "" {
+		if plan.versField != nil {
 			s.WriteString(" and ")
 			s.WriteString(t.dbmap.Dialect.QuoteField(t.version.ColumnName))
 			s.WriteString("=")
@@ -499,7 +775,7 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 			col := t.Columns[y]
 			if !col.Transient {
 				if col == t.version {
-					plan.versField = col.fieldName
+					plan.versField = col.fieldIndex
 				}
 			}
 		}
@@ -514,10 +790,10 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 			s.WriteString("=")
 			s.WriteString(t.dbmap.Dialect.BindVar(x))
 
-			plan.keyFields = append(plan.keyFields, k.fieldName)
-			plan.argFields = append(plan.argFields, k.fieldName)
+			plan.keyFields = append(plan.keyFields, k.fieldIndex)
+			plan.argFields = append(plan.argFields, k.fieldIndex)
 		}
-		if plan.versField != "" {
+		if plan.versField != nil {
 			s.WriteString(" and ")
 			s.WriteString(t.dbmap.Dialect.QuoteField(t.version.ColumnName))
 			s.WriteString("=")
@@ -547,8 +823,10 @@ func (t *TableMap) bindGet() bindPlan {
 				if x > 0 {
 					s.WriteString(",")
 				}
+				s.WriteString(t.dbmap.Dialect.QuotedTableForQuery(t.SchemaName, t.TableName))
+				s.WriteString(".")
 				s.WriteString(t.dbmap.Dialect.QuoteField(col.ColumnName))
-				plan.argFields = append(plan.argFields, col.fieldName)
+				plan.argFields = append(plan.argFields, col.fieldIndex)
 				x++
 			}
 		}
@@ -564,7 +842,7 @@ func (t *TableMap) bindGet() bindPlan {
 			s.WriteString("=")
 			s.WriteString(t.dbmap.Dialect.BindVar(x))
 
-			plan.keyFields = append(plan.keyFields, col.fieldName)
+			plan.keyFields = append(plan.keyFields, col.fieldIndex)
 		}
 		s.WriteString(t.dbmap.Dialect.QuerySuffix())
 
@@ -573,6 +851,48 @@ func (t *TableMap) bindGet() bindPlan {
 	}
 
 	return plan
+}
+
+// A Reference represents a foreign key relationship.
+type Reference struct {
+	table          *TableMap
+	column         *ColumnMap
+	cascadeDeletes bool
+	cascadeUpdates bool
+}
+
+// OnDeleteCascade returns whether or not this reference will cascade
+// on deletes.  Only used during table creation.
+func (r *Reference) OnDeleteCascade() bool {
+	return r.cascadeDeletes
+}
+
+// SetOnDeleteCascade sets whether or not this reference will be
+// created with an `on delete cascade` clause.
+func (r *Reference) SetOnDeleteCascade(cascade bool) {
+	r.cascadeDeletes = cascade
+}
+
+// OnUpdateCascade returns whether or not this reference will cascade
+// on updates.  Only used during table creation.
+func (r *Reference) OnUpdateCascade() bool {
+	return r.cascadeUpdates
+}
+
+// SetOnUpdateCascade sets whether or not this reference will be
+// created with an `on update cascade` clause.
+func (r *Reference) SetOnUpdateCascade(cascade bool) {
+	r.cascadeUpdates = cascade
+}
+
+// Table returns the table that this reference points to.
+func (r *Reference) Table() *TableMap {
+	return r.table
+}
+
+// Column returns the column that this reference points to.
+func (r *Reference) Column() *ColumnMap {
+	return r.column
 }
 
 // ColumnMap represents a mapping between a Go struct field and a single
@@ -595,7 +915,11 @@ type ColumnMap struct {
 	// Not used elsewhere
 	MaxSize int
 
-	fieldName string
+	targetTable *TableMap
+
+	fieldName  string
+	fieldIndex []int
+	fieldRef   interface{}
 
 	// origtype is the type prior to calling TypeConverter methods
 	origtype   reflect.Type
@@ -603,6 +927,52 @@ type ColumnMap struct {
 	isPK       bool
 	isAutoIncr bool
 	isNotNull  bool
+
+	// isReference is used for transient references, to differentiate
+	// them from normal transient fields.
+	isReference  bool
+	joinAlias    string
+	references   *Reference
+	referencedBy []*Reference
+}
+
+// TargetTable returns the *TableMap that this column represents, for
+// foreign key fields.
+func (c *ColumnMap) TargetTable() *TableMap {
+	return c.targetTable
+}
+
+// FieldIndex returns the index (intended to be used by
+// reflect.Value.FieldByIndex) for this column within its type.
+func (c *ColumnMap) FieldIndex() []int {
+	return c.fieldIndex
+}
+
+// JoinAlias returns a column name alias that can be used when
+// performing joined queries.  Embedded structs that map to tables
+// will prefix this to all child fields' join aliases.
+func (c *ColumnMap) JoinAlias() string {
+	return c.joinAlias
+}
+
+// SetJoinAlias sets the join alias for this column.
+func (c *ColumnMap) SetJoinAlias(alias string) {
+	c.joinAlias = alias
+}
+
+// References returns the table and column (in a *reference instance)
+// which this column references as a foreign key.
+//
+// TODO: Add setter
+func (c *ColumnMap) References() *Reference {
+	return c.references
+}
+
+// ReferencedBy returns a list of all tables and columns (in a
+// []*reference instance) which reference this column.  You cannot set
+// this value directly.
+func (c *ColumnMap) ReferencedBy() []*Reference {
+	return c.referencedBy
 }
 
 // Rename allows you to specify the column name in the table
@@ -732,7 +1102,16 @@ func (m *DbMap) AddTableWithName(i interface{}, name string) *TableMap {
 // AddTableWithNameAndSchema has the same behavior as AddTable, but sets
 // table.TableName to name.
 func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name string) *TableMap {
-	t := reflect.TypeOf(i)
+	v := reflect.ValueOf(i)
+	t := v.Type()
+	var ref reflect.Value
+	if t.Kind() == reflect.Ptr {
+		if !v.IsNil() {
+			ref = v
+			v = v.Elem()
+		}
+		t = t.Elem()
+	}
 	if name == "" {
 		name = t.Name()
 	}
@@ -747,8 +1126,13 @@ func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name str
 		}
 	}
 
-	tmap := &TableMap{gotype: t, TableName: name, SchemaName: schema, dbmap: m}
-	tmap.Columns, tmap.version = m.readStructColumns(t)
+	tmap := &TableMap{gotype: t, refval: ref, TableName: name, SchemaName: schema, dbmap: m}
+	tmap.Columns, tmap.version = tmap.readStructColumns(v, t)
+	for _, col := range tmap.Columns {
+		if col.references != nil {
+			tmap.fkeys = append(tmap.fkeys, col)
+		}
+	}
 	m.tables = append(m.tables, tmap)
 
 	return tmap
@@ -760,94 +1144,10 @@ func (m *DbMap) columnNameAndOptions(field reflect.StructField) (name string, op
 		name = tagVars[0]
 	}
 	if name == "" {
-		name = field.Name
+		name = strings.ToLower(field.Name)
 	}
 	if len(tagVars) > 1 {
 		options = tagVars[1:]
-	}
-	return
-}
-
-func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
-	n := t.NumField()
-	for i := 0; i < n; i++ {
-		f := t.Field(i)
-		var (
-			columnName string
-			options    []string
-		)
-		fakeAnonymous := false
-		if !f.Anonymous {
-			// Find the name and options now, in case the field needs to *act*
-			// as if it's embedded.
-			columnName, options = m.columnNameAndOptions(f)
-			for _, option := range options {
-				if option == "embed" {
-					fakeAnonymous = true
-					break
-				}
-			}
-		}
-		if (f.Anonymous || fakeAnonymous) && f.Type.Kind() == reflect.Struct {
-			// Recursively add nested fields in embedded structs.
-			subcols, subversion := m.readStructColumns(f.Type)
-			// Don't append nested fields that have the same field
-			// name as an already-mapped field.
-			for _, subcol := range subcols {
-				if fakeAnonymous {
-					subcol.fieldName = fmt.Sprintf("%s.%s", columnName, subcol.fieldName)
-				}
-				shouldAppend := true
-				for _, col := range cols {
-					if shouldAppend = subcol.fieldName != col.fieldName || subcol.Transient; !shouldAppend {
-						break
-					}
-				}
-				if shouldAppend {
-					cols = append(cols, subcol)
-				}
-			}
-			if subversion != nil {
-				version = subversion
-			}
-		} else {
-			origtype := f.Type
-			gotype := origtype
-			if m.TypeConverter != nil {
-				// Make a new pointer to a value of type gotype and
-				// pass it to the TypeConverter's FromDb method to see
-				// if a different type should be used for the column
-				// type during table creation.
-				value := reflect.New(gotype).Interface()
-				scanner, useHolder := m.TypeConverter.FromDb(value)
-				if useHolder {
-					gotype = reflect.TypeOf(scanner.Holder)
-				}
-			}
-			cm := &ColumnMap{
-				ColumnName: columnName,
-				Transient:  columnName == "-",
-				fieldName:  f.Name,
-				origtype:   origtype,
-				gotype:     gotype,
-			}
-			// Check for nested fields of the same field name and
-			// override them.
-			shouldAppend := true
-			for index, col := range cols {
-				if !col.Transient && col.fieldName == cm.fieldName {
-					cols[index] = cm
-					shouldAppend = false
-					break
-				}
-			}
-			if shouldAppend {
-				cols = append(cols, cm)
-			}
-			if cm.fieldName == "Version" {
-				version = cm
-			}
-		}
 	}
 	return
 }
@@ -919,6 +1219,20 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				}
 				if col.Unique {
 					s.WriteString(" unique")
+				}
+				ref := col.References()
+				if ref != nil {
+					s.WriteString(" references ")
+					s.WriteString(m.Dialect.QuotedTableForQuery(ref.Table().SchemaName, ref.Table().TableName))
+					s.WriteString("(")
+					s.WriteString(m.Dialect.QuoteField(ref.Column().ColumnName))
+					s.WriteString(")")
+					if ref.OnDeleteCascade() {
+						s.WriteString(" on delete cascade")
+					}
+					if ref.OnUpdateCascade() {
+						s.WriteString(" on update cascade")
+					}
 				}
 				if col.isAutoIncr {
 					s.WriteString(fmt.Sprintf(" %s", m.Dialect.AutoIncrStr()))
@@ -1609,6 +1923,73 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
+// fieldByIndex is a copy of v.FieldByIndex, with the following
+// changes:
+//
+// 1. If initialize is true, it will initialize pointers that it
+// descends through, sidestepping the "indirection through nil pointer
+// to embedded struct" error.
+//
+// 2. If initialize is true and it descends through a pointer to a
+// struct and returns a non-pointer field, it will also return a
+// custom scanner that will set the nearest struct pointer to nil if
+// the database value is nil, instead of trying to scan a nil value to
+// a non-nil field.
+//
+// 3. If initialize is false and it finds a nil pointer, it will
+// return nil rather than panicking.
+func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value, *CustomScanner) {
+	var lastPtr reflect.Value
+	for i, idx := range index {
+		if v.Kind() == reflect.Ptr {
+			if i > 0 {
+				lastPtr = v
+			}
+			if v.IsNil() {
+				if !initialize {
+					return v, nil
+				}
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		switch v.Kind() {
+		case reflect.Struct:
+			v = v.Field(idx)
+		case reflect.Slice, reflect.Array:
+			if idx == sliceIndexPlaceholder {
+				// The placeholder means to return the first element,
+				// creating a first element if necessary.
+				idx = 0
+				if v.Len() == 0 {
+					newV := reflect.New(v.Type().Elem()).Elem()
+					v.Set(reflect.Append(v, newV))
+				}
+			}
+			v = v.Index(idx)
+		default:
+			panic("gorp: found unsupported type using fieldByIndex")
+		}
+	}
+	var scanner *CustomScanner
+	if initialize && lastPtr.IsValid() && lastPtr.Elem() != v {
+		holder := reflect.New(v.Addr().Type()).Elem()
+		scanner = &CustomScanner{
+			Holder: holder,
+			Target: v.Addr().Interface(),
+			Binder: func(interface{}, interface{}) error {
+				if holder.IsNil() {
+					lastPtr.Set(reflect.Zero(lastPtr.Type()))
+					return nil
+				}
+				v.Set(holder.Elem())
+				return nil
+			},
+		}
+	}
+	return v, scanner
+}
+
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 	var (
@@ -1661,9 +2042,13 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		return nil, fmt.Errorf("gorp: select into non-struct slice requires 1 column, got %d", len(cols))
 	}
 
-	var colToFieldIndex [][]int
+	var (
+		colToFieldIndex [][]int
+		multiJoinCols   [][]*ColumnMap
+		table           *TableMap
+	)
 	if intoStruct {
-		if colToFieldIndex, err = columnToFieldIndex(m, t, cols); err != nil {
+		if colToFieldIndex, table, multiJoinCols, err = columnToFieldIndex(m, t, cols); err != nil {
 			if !NonFatalError(err) {
 				return nil, err
 			}
@@ -1679,6 +2064,9 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		sliceValue = reflect.Indirect(reflect.ValueOf(i))
 	)
 
+	// We'll store types with keys that have already been read (for
+	// one-to-many or many-to-many queries) in a map.
+	parsedRows := make(map[reflect.Type]map[string]reflect.Value)
 	for {
 		if !rows.Next() {
 			// if error occured return rawselect
@@ -1696,6 +2084,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
+
 				index := colToFieldIndex[x]
 				if index == nil {
 					// this field is not present in the struct, so create a dummy
@@ -1704,7 +2093,12 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 					dest[x] = &dummy
 					continue
 				}
-				f = f.FieldByIndex(index)
+				var scan *CustomScanner
+				f, scan = fieldByIndex(f, index, true)
+				if scan != nil {
+					f = scan.Holder.(reflect.Value)
+					custScan = append(custScan, *scan)
+				}
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
@@ -1729,13 +2123,27 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			}
 		}
 
-		if appendToSlice {
-			if !pointerElements {
-				v = v.Elem()
+		shouldAppend := true
+		if multiJoinCols != nil && table != nil {
+			// There are slice elements in the type that are being
+			// filled out by values in the query.  This means the
+			// select is probably a many-to-many or one-to-many join
+			// statement, and we need to deal with the possibility
+			// that parts of this row have already been loaded.
+
+			found := handleMultiJoin(v.Elem(), table, multiJoinCols, parsedRows)
+			shouldAppend = !found
+		}
+
+		if shouldAppend {
+			if appendToSlice {
+				if !pointerElements {
+					v = v.Elem()
+				}
+				sliceValue.Set(reflect.Append(sliceValue, v))
+			} else {
+				list = append(list, v.Interface())
 			}
-			sliceValue.Set(reflect.Append(sliceValue, v))
-		} else {
-			list = append(list, v.Interface())
 		}
 	}
 
@@ -1744,6 +2152,70 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	}
 
 	return list, nonFatalErr
+}
+
+func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) bool {
+	rowKeyBuf := bytes.Buffer{}
+	rowKeyBuf.WriteRune('|')
+	for _, k := range table.keys {
+		thisRowKey := v.FieldByIndex(k.fieldIndex).Interface()
+		rowKeyBuf.WriteString(fmt.Sprint(thisRowKey))
+		rowKeyBuf.WriteRune('|')
+	}
+	rowKey := rowKeyBuf.String()
+
+	tableValueMap, ok := parsedRows[table.gotype]
+	if !ok {
+		tableValueMap = make(map[string]reflect.Value)
+		parsedRows[table.gotype] = tableValueMap
+	}
+
+	rowVal, ok := tableValueMap[rowKey]
+	if !ok {
+		tableValueMap[rowKey] = v
+		return false
+	}
+
+	for _, joinedCols := range multiJoinCols {
+		subV := v
+		targetV := rowVal
+		newColFound := false
+		keyBuf := rowKeyBuf
+		for _, subCol := range joinedCols {
+			subV = subV.FieldByIndex(subCol.fieldIndex).Index(0)
+			valueMap, ok := parsedRows[subV.Type()]
+			if !ok {
+				valueMap = make(map[string]reflect.Value)
+				parsedRows[subV.Type()] = valueMap
+			}
+			keyFinder := subV
+			if keyFinder.Kind() == reflect.Ptr {
+				keyFinder = keyFinder.Elem()
+			}
+			keyBuf.WriteRune('|')
+			for _, k := range subCol.targetTable.keys {
+				thisRowKey := keyFinder.FieldByIndex(k.fieldIndex).Interface()
+				keyBuf.WriteString(fmt.Sprint(thisRowKey))
+				keyBuf.WriteRune('|')
+			}
+			key := keyBuf.String()
+
+			existingRow, exists := valueMap[key]
+			if !exists {
+				valueMap[key] = subV
+				if newColFound {
+					// Sub-elements of a new column will be populated
+					// already, so skip appending.
+					continue
+				}
+				targetV = targetV.FieldByIndex(subCol.fieldIndex)
+				targetV.Set(reflect.Append(targetV, subV))
+				newColFound = true
+			}
+			targetV = existingRow
+		}
+	}
+	return true
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used
@@ -1791,8 +2263,18 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
-func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col string) (fieldIndex []int, err error) {
-	tableMapped := table != nil
+func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col string) (fieldIndex []int, joinColumns []*ColumnMap, err error) {
+	// Simplest case: the column is mapped to a field in t.
+	if table != nil {
+		var column *ColumnMap
+		joinColumns, column = colMapOrNil(table, col)
+		if column != nil {
+			fieldIndex = column.fieldIndex
+			return
+		}
+	}
+	// Less simple case: the type has no mapping or the column is not
+	// mapped to a field
 	_, found := t.FieldByNameFunc(func(fieldName string) bool {
 		field, _ := t.FieldByName(fieldName)
 		fieldName, options := m.columnNameAndOptions(field)
@@ -1802,17 +2284,12 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 		}
 		for _, option := range options {
 			if option == "embed" {
-				if index, err := fieldIndexForColumnName(m, table, field.Type, col); err == nil {
+				var index []int
+				if index, joinColumns, err = fieldIndexForColumnName(m, table, field.Type, col); err == nil {
 					fieldIndex = append(field.Index, index...)
 					return true
 				}
 				return false
-			}
-		}
-		if tableMapped {
-			colMap := colMapOrNil(table, fieldName)
-			if colMap != nil {
-				fieldName = colMap.ColumnName
 			}
 		}
 		if col == strings.ToLower(fieldName) {
@@ -1827,12 +2304,19 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 	return
 }
 
-func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
-	colToFieldIndex := make([][]int, len(cols))
+type fieldMap struct {
+	index  []int
+	gotype reflect.Type
+	keys   [][]int
+}
+
+func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) (colToFieldIndex [][]int, table *TableMap, joinMaps [][]*ColumnMap, err error) {
+	colToFieldIndex = make([][]int, len(cols))
+	joinMaps = make([][]*ColumnMap, 3)
 
 	// check if type t is a mapped table - if so we'll
 	// check the table for column aliasing below
-	table := tableOrNil(m, t)
+	table = tableOrNil(m, t)
 
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
@@ -1840,20 +2324,37 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		index, err := fieldIndexForColumnName(m, table, t, colName)
+		idx, joinCols, err := fieldIndexForColumnName(m, table, t, colName)
 		if err != nil {
 			missingColNames = append(missingColNames, colName)
-		} else {
-			colToFieldIndex[x] = index
+			continue
+		}
+		colToFieldIndex[x] = idx
+		if joinCols != nil {
+			alreadyMapped := false
+			for _, m := range joinMaps {
+				for i := 0; len(m) == len(joinCols) && i < len(m); i++ {
+					alreadyMapped = joinCols[i] == m[i]
+					if !alreadyMapped {
+						break
+					}
+				}
+				if alreadyMapped {
+					break
+				}
+			}
+			if !alreadyMapped {
+				joinMaps = append(joinMaps, joinCols)
+			}
 		}
 	}
 	if len(missingColNames) > 0 {
-		return colToFieldIndex, &NoFieldInTypeError{
+		err = &NoFieldInTypeError{
 			TypeName:        t.Name(),
 			MissingColNames: missingColNames,
 		}
 	}
-	return colToFieldIndex, nil
+	return
 }
 
 func fieldByName(val reflect.Value, fieldName string) *reflect.Value {
@@ -1933,10 +2434,12 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	conv := m.TypeConverter
 	custScan := make([]CustomScanner, 0)
 
-	for x, fieldName := range plan.argFields {
-		f := v.Elem()
-		for _, name := range strings.Split(fieldName, ".") {
-			f = f.FieldByName(name)
+	for x, fieldIdx := range plan.argFields {
+		var scan *CustomScanner
+		f, scan := fieldByIndex(v, fieldIdx, true)
+		if scan != nil {
+			f = scan.Holder.(reflect.Value)
+			custScan = append(custScan, *scan)
 		}
 		target := f.Addr().Interface()
 		if conv != nil {
@@ -2059,8 +2562,8 @@ func update(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 				bi.existingVersion, elem, bi.keys...)
 		}
 
-		if bi.versField != "" {
-			elem.FieldByName(bi.versField).SetInt(bi.existingVersion + 1)
+		if bi.versField != nil {
+			elem.FieldByIndex(bi.versField).SetInt(bi.existingVersion + 1)
 		}
 
 		count += rows
@@ -2096,7 +2599,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 		}
 
 		if bi.autoIncrIdx > -1 {
-			f := elem.FieldByName(bi.autoIncrFieldName)
+			f := elem.FieldByIndex(bi.autoIncrFieldIdx)
 			switch inserter := m.Dialect.(type) {
 			case IntegerAutoIncrInserter:
 				id, err := inserter.InsertAutoIncr(exec, bi.query, bi.args...)
@@ -2109,7 +2612,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 				} else if (k == reflect.Uint) || (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
 					f.SetUint(uint64(id))
 				} else {
-					return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldName=%s", bi.query, bi.autoIncrIdx, bi.autoIncrFieldName)
+					return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldIdx=%s", bi.query, bi.autoIncrIdx, bi.autoIncrFieldIdx)
 				}
 			case TargetedAutoIncrInserter:
 				err := inserter.InsertAutoIncrToTarget(exec, bi.query, f.Addr().Interface(), bi.args...)

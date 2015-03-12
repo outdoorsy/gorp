@@ -128,7 +128,7 @@ type MigrationManager struct {
 func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 	l := make([]columnLayout, 0, len(t.Columns))
 	for _, colMap := range t.Columns {
-		if colMap.ColumnName == "-" {
+		if colMap.Transient {
 			continue
 		}
 		var stype string
@@ -325,7 +325,7 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 				}
 				break
 			}
-			if oldCol.FieldName == newCol.FieldName {
+			if oldCol.FieldName != "" && oldCol.FieldName == newCol.FieldName {
 				found = true
 				oldQuotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
 				sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + oldQuotedColumn + " TO " + quotedColumn
@@ -357,17 +357,26 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 // Migrater returns a MigrationManager using the given tablename as
 // the migration table.
 func (m *DbMap) Migrater(schemaname, tablename string) (*MigrationManager, error) {
-	// Just run the create table statement for the migration table,
-	// using a temporary DbMap
-	tmpM := &DbMap{
-		Db:      m.Db,
-		Dialect: m.Dialect,
+	added := false
+	for _, t := range m.tables {
+		if t.SchemaName == schemaname && t.TableName == tablename && t.gotype == reflect.TypeOf(tableRecord{}) {
+			added = true
+			break
+		}
 	}
-	tmpM.AddTableWithNameAndSchema(tableRecord{}, schemaname, tablename).SetKeys(true, "ID")
-	if err := tmpM.CreateTablesIfNotExists(); err != nil {
-		return nil, err
+	if !added {
+		// Just run the create table statement for the migration table,
+		// using a temporary DbMap
+		tmpM := &DbMap{
+			Db:      m.Db,
+			Dialect: m.Dialect,
+		}
+		tmpM.AddTableWithNameAndSchema(tableRecord{}, schemaname, tablename).SetKeys(true, "ID")
+		if err := tmpM.CreateTablesIfNotExists(); err != nil {
+			return nil, err
+		}
+		m.AddTableWithNameAndSchema(tableRecord{}, schemaname, tablename).SetKeys(true, "ID")
 	}
-	m.AddTableWithNameAndSchema(tableRecord{}, schemaname, tablename).SetKeys(true, "ID")
 	return &MigrationManager{
 		schemaname: schemaname,
 		tablename:  tablename,
