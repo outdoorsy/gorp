@@ -1939,11 +1939,35 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 // 3. If initialize is false and it finds a nil pointer, it will
 // return nil rather than panicking.
 func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value, *CustomScanner) {
-	var lastPtr reflect.Value
+	var (
+		// A quick paragraph about these:
+		//
+		// If we get nil values in a select statement for joins, we
+		// want to empty the nearest parent struct or pointer.
+		// However, there's an exception: if the direct parent of a
+		// pointer is a list, then we still want to empty the list
+		// instead of emptying the pointer.
+		//
+		// So we need to store the most direct parent to empty; if
+		// it's set, then we need to make a custom scanner that
+		// empties it if a nil value is received.
+		lastListDepth = -1
+		emptyingValue reflect.Value
+	)
 	for i, idx := range index {
 		if v.Kind() == reflect.Ptr {
-			if i > 0 {
-				lastPtr = v
+			// If the difference in depth is only 1, then this
+			// pointer type is the list's element type, and we
+			// still want to empty the list on nil values.
+			// Anything more, though, and this is nested
+			// deeper and we just want to set the pointer to
+			// nil.
+			//
+			// Note that 0 - -1 = 1 and therefor the equality
+			// will always be false at the top level.
+			if i-lastListDepth > 1 {
+				lastListDepth = -1
+				emptyingValue = v
 			}
 			if v.IsNil() {
 				if !initialize {
@@ -1957,6 +1981,8 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 		case reflect.Struct:
 			v = v.Field(idx)
 		case reflect.Slice, reflect.Array:
+			emptyingValue = v
+			lastListDepth = i
 			if idx == sliceIndexPlaceholder {
 				// The placeholder means to return the first element,
 				// creating a first element if necessary.
@@ -1971,18 +1997,39 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 			panic("gorp: found unsupported type using fieldByIndex")
 		}
 	}
+
+	// Only select statements set initialize to true - for
+	// insert/update/delete, we actually don't want to use a scanner.
 	var scanner *CustomScanner
-	if initialize && lastPtr.IsValid() && lastPtr.Elem() != v {
-		holder := reflect.New(v.Addr().Type()).Elem()
+	if initialize && emptyingValue.IsValid() && emptyingValue != v {
+		var holder reflect.Value
+		// We need an addressable pointer to a scannable type (so that
+		// it can store nil values).  If v is a pointer, use it;
+		// otherwise, create a new one.
+		//
+		// The vast majority of the time, v will be non-nillable, so
+		// the new value will be created, but it really doesn't hurt
+		// to check first.
+		if v.Kind() == reflect.Ptr {
+			holder = v
+		} else {
+			holder = reflect.New(v.Addr().Type()).Elem()
+		}
 		scanner = &CustomScanner{
 			Holder: holder,
 			Target: v.Addr().Interface(),
 			Binder: func(interface{}, interface{}) error {
 				if holder.IsNil() {
-					lastPtr.Set(reflect.Zero(lastPtr.Type()))
+					// Only bother to empty the value if it's not
+					// already empty.
+					if !emptyingValue.IsNil() {
+						emptyingValue.Set(reflect.Zero(emptyingValue.Type()))
+					}
 					return nil
 				}
-				v.Set(holder.Elem())
+				if holder != v {
+					v.Set(holder.Elem())
+				}
 				return nil
 			},
 		}
