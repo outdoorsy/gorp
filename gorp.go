@@ -213,6 +213,7 @@ func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
 		cm := &ColumnMap{
 			ColumnName: col.joinAlias + key.ColumnName,
 			fieldIndex: append(col.fieldIndex, key.fieldIndex...),
+			fieldName:  col.fieldName + "." + key.fieldName,
 			origtype:   key.origtype,
 			gotype:     key.gotype,
 			joinAlias:  key.joinAlias,
