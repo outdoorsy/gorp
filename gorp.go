@@ -1924,6 +1924,72 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
+type fieldBinder struct {
+	holder          reflect.Value
+	parentNilSetter reflect.Value
+	nilSetter       reflect.Value
+	valueSetter     reflect.Value
+	binder          binder
+
+	retErr error
+}
+
+func (b *fieldBinder) Bind() error {
+	val := b.holder
+	valIsNil := false
+	if b.nilSetter.IsValid() {
+		// If the field can be set to nil, then b.holder is guaranteed
+		// to be nillable.
+		valIsNil = val.IsNil()
+		if valIsNil && val != b.nilSetter {
+			// since val (which is b.holder) is not equal to
+			// b.nilSetter, b.binder.Bind() does not need to be
+			// called.
+			if !b.nilSetter.IsNil() {
+				b.nilSetter.Set(reflect.Zero(b.nilSetter.Type()))
+			}
+			return nil
+		}
+		if !valIsNil {
+			val = val.Elem()
+		}
+	}
+	// if b.valueSetter is not valid, it means that the holder was the
+	// field, so there's nothing more to do.
+	if !valIsNil && b.valueSetter.IsValid() {
+		b.valueSetter.Set(val)
+	}
+	if b.binder != nil {
+		err := b.binder.Bind()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *fieldBinder) setScanner(scanner CustomScanner) {
+	b.binder = scanner
+	newHolder := reflect.ValueOf(scanner.Holder)
+	if newHolder.Kind() != reflect.Ptr {
+		panic(fmt.Errorf("Cannot use non-pointer type %s as holder", newHolder.Type().Name()))
+	}
+	if b.holder == b.nilSetter {
+		b.nilSetter = b.parentNilSetter
+	}
+	b.holder = newHolder.Elem()
+	b.valueSetter = b.holder
+	if b.holder.Kind() == reflect.Ptr {
+		// The CustomScanner probably wants to handle nil values on
+		// its own.
+		b.valueSetter = b.valueSetter.Elem()
+		b.nilSetter = b.holder
+	} else if b.nilSetter.IsValid() {
+		// We still want to allow nil values.
+		b.holder = reflect.New(newHolder.Type()).Elem()
+	}
+}
+
 // fieldByIndex is a copy of v.FieldByIndex, with the following
 // changes:
 //
@@ -1939,7 +2005,7 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 //
 // 3. If initialize is false and it finds a nil pointer, it will
 // return nil rather than panicking.
-func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value, *CustomScanner) {
+func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value, *fieldBinder) {
 	var (
 		// A quick paragraph about these:
 		//
@@ -1952,8 +2018,9 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 		// So we need to store the most direct parent to empty; if
 		// it's set, then we need to make a custom scanner that
 		// empties it if a nil value is received.
-		lastListDepth = -1
-		emptyingValue reflect.Value
+		lastListDepth         = -1
+		emptyingValue         reflect.Value
+		previousEmptyingValue reflect.Value
 	)
 	for i, idx := range index {
 		if v.Kind() == reflect.Ptr {
@@ -1968,6 +2035,7 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 			// will always be false at the top level.
 			if i-lastListDepth > 1 {
 				lastListDepth = -1
+				previousEmptyingValue = emptyingValue
 				emptyingValue = v
 			}
 			if v.IsNil() {
@@ -1982,6 +2050,7 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 		case reflect.Struct:
 			v = v.Field(idx)
 		case reflect.Slice, reflect.Array:
+			previousEmptyingValue = emptyingValue
 			emptyingValue = v
 			lastListDepth = i
 			if idx == sliceIndexPlaceholder {
@@ -1999,43 +2068,36 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 		}
 	}
 
-	// Only select statements set initialize to true - for
-	// insert/update/delete, we actually don't want to use a scanner.
-	var scanner *CustomScanner
-	if initialize && emptyingValue.IsValid() && emptyingValue != v {
-		var holder reflect.Value
-		// We need an addressable pointer to a scannable type (so that
-		// it can store nil values).  If v is a pointer, use it;
-		// otherwise, create a new one.
-		//
-		// The vast majority of the time, v will be non-nillable, so
-		// the new value will be created, but it really doesn't hurt
-		// to check first.
-		if v.Kind() == reflect.Ptr {
-			holder = v
-		} else {
-			holder = reflect.New(v.Addr().Type()).Elem()
+	// If initialize is true, then this is a select statement, so we
+	// need to provide a fieldBinder
+	var b *fieldBinder
+	if initialize {
+		b = &fieldBinder{
+			parentNilSetter: previousEmptyingValue,
+			nilSetter:       emptyingValue,
+			holder:          v,
 		}
-		scanner = &CustomScanner{
-			Holder: holder,
-			Target: v.Addr().Interface(),
-			Binder: func(interface{}, interface{}) error {
-				if holder.IsNil() {
-					// Only bother to empty the value if it's not
-					// already empty.
-					if !emptyingValue.IsNil() {
-						emptyingValue.Set(reflect.Zero(emptyingValue.Type()))
-					}
-					return nil
+		if emptyingValue.IsValid() && v != emptyingValue {
+			if v.Kind() == reflect.Ptr {
+				// This is unlikely, since most of the time v and
+				// emptyingValue will be equal when v is a pointer,
+				// but it can happen.
+				if v.IsNil() {
+					v.Set(reflect.New(v.Type().Elem()))
 				}
-				if holder != v {
-					v.Set(holder.Elem())
-				}
-				return nil
-			},
+				b.valueSetter = v.Elem()
+			} else {
+				// Make holder an addressable, nillable value.
+				b.holder = reflect.New(v.Addr().Type()).Elem()
+				b.valueSetter = v
+			}
 		}
 	}
-	return v, scanner
+	return v, b
+}
+
+type binder interface {
+	Bind() error
 }
 
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
@@ -2127,10 +2189,11 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		v := reflect.New(t)
 		dest := make([]interface{}, len(cols))
 
-		custScan := make([]CustomScanner, 0)
+		custScan := make([]binder, 0)
 
 		for x := range cols {
 			f := v.Elem()
+			var bind *fieldBinder
 			if intoStruct {
 
 				index := colToFieldIndex[x]
@@ -2141,20 +2204,26 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 					dest[x] = &dummy
 					continue
 				}
-				var scan *CustomScanner
-				f, scan = fieldByIndex(f, index, true)
-				if scan != nil {
-					f = scan.Holder.(reflect.Value)
-					custScan = append(custScan, *scan)
+				f, bind = fieldByIndex(f, index, true)
+				if bind != nil {
+					custScan = append(custScan, bind)
 				}
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
 				scanner, ok := conv.FromDb(target)
 				if ok {
-					target = scanner.Holder
-					custScan = append(custScan, scanner)
+					if bind != nil {
+						// The fieldBinder will call scanner.Bind().
+						bind.setScanner(scanner)
+					} else {
+						target = scanner.Holder
+						custScan = append(custScan, scanner)
+					}
 				}
+			}
+			if bind != nil {
+				target = bind.holder.Addr().Interface()
 			}
 			dest[x] = target
 		}
@@ -2480,22 +2549,28 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	dest := make([]interface{}, len(plan.argFields))
 
 	conv := m.TypeConverter
-	custScan := make([]CustomScanner, 0)
+	custScan := make([]binder, 0)
 
 	for x, fieldIdx := range plan.argFields {
-		var scan *CustomScanner
-		f, scan := fieldByIndex(v, fieldIdx, true)
-		if scan != nil {
-			f = scan.Holder.(reflect.Value)
-			custScan = append(custScan, *scan)
+		f, bind := fieldByIndex(v, fieldIdx, true)
+		if bind != nil {
+			custScan = append(custScan, bind)
 		}
 		target := f.Addr().Interface()
 		if conv != nil {
 			scanner, ok := conv.FromDb(target)
 			if ok {
-				target = scanner.Holder
-				custScan = append(custScan, scanner)
+				if bind != nil {
+					// The fieldBinder will call scanner.Bind().
+					bind.setScanner(scanner)
+				} else {
+					target = scanner.Holder
+					custScan = append(custScan, scanner)
+				}
 			}
+		}
+		if bind != nil {
+			target = bind.holder.Addr().Interface()
 		}
 		dest[x] = target
 	}
