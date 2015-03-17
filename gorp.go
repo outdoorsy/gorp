@@ -2299,7 +2299,12 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 		newColFound := false
 		keyBuf := rowKeyBuf
 		for _, subCol := range joinedCols {
-			subV = subV.FieldByIndex(subCol.fieldIndex).Index(0)
+			field := subV.FieldByIndex(subCol.fieldIndex)
+			if field.Len() == 0 {
+				// This field and all sub-fields are nil.
+				break
+			}
+			subV = field.Index(0)
 			valueMap, ok := parsedRows[subV.Type()]
 			if !ok {
 				valueMap = make(map[string]reflect.Value)
