@@ -1979,7 +1979,7 @@ func (b *fieldBinder) setScanner(scanner CustomScanner) {
 	}
 	b.holder = newHolder.Elem()
 	b.valueSetter = b.holder
-	if b.holder.Kind() == reflect.Ptr {
+	if b.holder.Kind() == reflect.Ptr || b.holder.Kind() == reflect.Map || b.holder.Kind() == reflect.Slice {
 		// The CustomScanner probably wants to handle nil values on
 		// its own.
 		b.valueSetter = b.valueSetter.Elem()
@@ -2023,28 +2023,29 @@ func fieldByIndex(v reflect.Value, index []int, initialize bool) (reflect.Value,
 		previousEmptyingValue reflect.Value
 	)
 	for i, idx := range index {
-		if v.Kind() == reflect.Ptr {
+		if v.Kind() == reflect.Ptr || v.Kind() == reflect.Map || v.Kind() == reflect.Slice {
 			// If the difference in depth is only 1, then this
-			// pointer type is the list's element type, and we
-			// still want to empty the list on nil values.
-			// Anything more, though, and this is nested
-			// deeper and we just want to set the pointer to
-			// nil.
+			// nillable type is the list's element type, and we still
+			// want to empty the list on nil values.  Anything more,
+			// though, and this is nested deeper and we just want to
+			// set the pointer to nil.
 			//
-			// Note that 0 - -1 = 1 and therefor the equality
-			// will always be false at the top level.
+			// Note that 0 - -1 = 1 and therefor the inequality will
+			// always be false at the top level.
 			if i-lastListDepth > 1 {
 				lastListDepth = -1
 				previousEmptyingValue = emptyingValue
 				emptyingValue = v
 			}
-			if v.IsNil() {
-				if !initialize {
-					return v, nil
+			if v.Kind() == reflect.Ptr {
+				if v.IsNil() {
+					if !initialize {
+						return v, nil
+					}
+					v.Set(reflect.New(v.Type().Elem()))
 				}
-				v.Set(reflect.New(v.Type().Elem()))
+				v = v.Elem()
 			}
-			v = v.Elem()
 		}
 		switch v.Kind() {
 		case reflect.Struct:
