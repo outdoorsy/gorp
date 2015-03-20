@@ -216,6 +216,7 @@ func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
 			fieldName:  col.fieldName + "." + key.fieldName,
 			origtype:   key.origtype,
 			gotype:     key.gotype,
+			srcTable:   t,
 			joinAlias:  key.joinAlias,
 			references: &Reference{
 				table:  col.targetTable,
@@ -353,6 +354,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 			fieldIndex:  f.Index,
 			fieldRef:    fieldRef,
 			joinAlias:   joinAlias,
+			srcTable:    t,
 			targetTable: targetTable,
 			origtype:    origtype,
 			gotype:      gotype,
@@ -916,6 +918,7 @@ type ColumnMap struct {
 	// Not used elsewhere
 	MaxSize int
 
+	srcTable    *TableMap
 	targetTable *TableMap
 
 	fieldName  string
@@ -935,6 +938,50 @@ type ColumnMap struct {
 	joinAlias    string
 	references   *Reference
 	referencedBy []*Reference
+}
+
+func (c *ColumnMap) typeDef() string {
+	dialect := c.srcTable.dbmap.Dialect
+	s := bytes.Buffer{}
+	var stype string
+	typer, ok := reflect.New(c.origtype).Interface().(TypeDeffer)
+	if !ok && c.origtype != c.gotype {
+		typer, ok = reflect.New(c.gotype).Interface().(TypeDeffer)
+	}
+	if ok {
+		stype = typer.TypeDef()
+	} else {
+		stype = dialect.ToSqlType(c.gotype, c.MaxSize, c.isAutoIncr)
+	}
+	s.WriteString(fmt.Sprintf("%s %s", dialect.QuoteField(c.ColumnName), stype))
+
+	if c.isPK || c.isNotNull {
+		s.WriteString(" not null")
+	}
+	if c.isPK && len(c.srcTable.keys) == 1 {
+		s.WriteString(" primary key")
+	}
+	if c.Unique {
+		s.WriteString(" unique")
+	}
+	ref := c.References()
+	if ref != nil {
+		s.WriteString(" references ")
+		s.WriteString(dialect.QuotedTableForQuery(ref.Table().SchemaName, ref.Table().TableName))
+		s.WriteString("(")
+		s.WriteString(dialect.QuoteField(ref.Column().ColumnName))
+		s.WriteString(")")
+		if ref.OnDeleteCascade() {
+			s.WriteString(" on delete cascade")
+		}
+		if ref.OnUpdateCascade() {
+			s.WriteString(" on update cascade")
+		}
+	}
+	if c.isAutoIncr {
+		s.WriteString(fmt.Sprintf(" %s", dialect.AutoIncrStr()))
+	}
+	return s.String()
 }
 
 // TargetTable returns the *TableMap that this column represents, for
@@ -1200,44 +1247,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				if x > 0 {
 					s.WriteString(", ")
 				}
-				var stype string
-				typer, ok := reflect.New(col.origtype).Interface().(TypeDeffer)
-				if !ok && col.origtype != col.gotype {
-					typer, ok = reflect.New(col.gotype).Interface().(TypeDeffer)
-				}
-				if ok {
-					stype = typer.TypeDef()
-				} else {
-					stype = m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
-				}
-				s.WriteString(fmt.Sprintf("%s %s", m.Dialect.QuoteField(col.ColumnName), stype))
-
-				if col.isPK || col.isNotNull {
-					s.WriteString(" not null")
-				}
-				if col.isPK && len(table.keys) == 1 {
-					s.WriteString(" primary key")
-				}
-				if col.Unique {
-					s.WriteString(" unique")
-				}
-				ref := col.References()
-				if ref != nil {
-					s.WriteString(" references ")
-					s.WriteString(m.Dialect.QuotedTableForQuery(ref.Table().SchemaName, ref.Table().TableName))
-					s.WriteString("(")
-					s.WriteString(m.Dialect.QuoteField(ref.Column().ColumnName))
-					s.WriteString(")")
-					if ref.OnDeleteCascade() {
-						s.WriteString(" on delete cascade")
-					}
-					if ref.OnUpdateCascade() {
-						s.WriteString(" on update cascade")
-					}
-				}
-				if col.isAutoIncr {
-					s.WriteString(fmt.Sprintf(" %s", m.Dialect.AutoIncrStr()))
-				}
+				s.WriteString(col.typeDef())
 
 				x++
 			}
