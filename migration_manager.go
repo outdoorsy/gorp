@@ -131,24 +131,9 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 		if colMap.Transient {
 			continue
 		}
-		var stype string
+		stype, hasSwitch := colMap.TypeSwitch()
 		orig := ptrToVal(colMap.origtype).Interface()
 		dbValue := ptrToVal(colMap.gotype).Interface()
-		typer, hasDef := orig.(TypeDeffer)
-		if !hasDef && colMap.origtype != colMap.gotype {
-			typer, hasDef = dbValue.(TypeDeffer)
-		}
-		typeSwitcher, hasSwitch := orig.(TypeDefSwitcher)
-		if !hasSwitch && colMap.origtype != colMap.gotype {
-			typeSwitcher, hasSwitch = dbValue.(TypeDefSwitcher)
-		}
-		if hasDef {
-			stype = typer.TypeDef()
-		} else if hasSwitch {
-			stype = typeSwitcher.TypeDefSwitch()
-		} else {
-			stype = m.dbMap.Dialect.ToSqlType(colMap.gotype, colMap.MaxSize, colMap.isAutoIncr)
-		}
 		cast := "%s"
 		typeCaster, ok := orig.(TypeCaster)
 		if !ok {

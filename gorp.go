@@ -940,32 +940,67 @@ type ColumnMap struct {
 	referencedBy []*Reference
 }
 
-func (c *ColumnMap) typeDef() string {
+// TypeDef returns the type definition for this column.
+func (c *ColumnMap) TypeDef() string {
+	def, _ := c.typeDef(false)
+	return def
+}
+
+// TypeSwitch returns the type definition for this column, to be used
+// *after* creation of all tables (e.g. for foreign key constraints to
+// be added after all tables have been created).  If there is nothing
+// to switch post-table-creation, it will return the same string as
+// TypeDef.
+//
+// The returned boolean value describes whether or not a post-creation
+// type switch was found.
+func (c *ColumnMap) TypeSwitch() (string, bool) {
+	return c.typeDef(true)
+}
+
+func (c *ColumnMap) typeDef(checkSwitch bool) (string, bool) {
 	dialect := c.srcTable.dbmap.Dialect
 	s := bytes.Buffer{}
 	var stype string
-	typer, ok := reflect.New(c.origtype).Interface().(TypeDeffer)
-	if !ok && c.origtype != c.gotype {
-		typer, ok = reflect.New(c.gotype).Interface().(TypeDeffer)
+	orig := ptrToVal(c.origtype).Interface()
+	dbValue := ptrToVal(c.gotype).Interface()
+	typer, hasDef := orig.(TypeDeffer)
+	if !hasDef && c.origtype != c.gotype {
+		typer, hasDef = dbValue.(TypeDeffer)
 	}
-	if ok {
+	typeSwitcher, hasSwitch := orig.(TypeDefSwitcher)
+	if !hasSwitch && c.origtype != c.gotype {
+		typeSwitcher, hasSwitch = dbValue.(TypeDefSwitcher)
+	}
+	if hasSwitch && checkSwitch {
+		stype = typeSwitcher.TypeDefSwitch()
+	} else if hasDef {
 		stype = typer.TypeDef()
 	} else {
 		stype = dialect.ToSqlType(c.gotype, c.MaxSize, c.isAutoIncr)
 	}
 	s.WriteString(fmt.Sprintf("%s %s", dialect.QuoteField(c.ColumnName), stype))
 
-	if c.isPK || c.isNotNull {
+	// TypeSwitch is used for constraints which may need to be applied
+	// to the table after initial creation.  This includes NOT NULL,
+	// UNIQUE, and FOREIGN KEY constraints.
+	//
+	// hasSwitch is supposed to represent whether or not any of those
+	// are true.
+	hasSwitch = checkSwitch && (hasSwitch || c.isNotNull || c.Unique || c.References() != nil)
+	if c.isPK || (checkSwitch && c.isNotNull) {
+		// Primary key values probably shouldn't defer their
+		// constraint creation.
 		s.WriteString(" not null")
 	}
 	if c.isPK && len(c.srcTable.keys) == 1 {
 		s.WriteString(" primary key")
 	}
-	if c.Unique {
+	if checkSwitch && c.Unique {
 		s.WriteString(" unique")
 	}
 	ref := c.References()
-	if ref != nil {
+	if checkSwitch && ref != nil {
 		s.WriteString(" references ")
 		s.WriteString(dialect.QuotedTableForQuery(ref.Table().SchemaName, ref.Table().TableName))
 		s.WriteString("(")
@@ -981,7 +1016,7 @@ func (c *ColumnMap) typeDef() string {
 	if c.isAutoIncr {
 		s.WriteString(fmt.Sprintf(" %s", dialect.AutoIncrStr()))
 	}
-	return s.String()
+	return s.String(), hasSwitch
 }
 
 // TargetTable returns the *TableMap that this column represents, for
@@ -1247,7 +1282,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				if x > 0 {
 					s.WriteString(", ")
 				}
-				s.WriteString(col.typeDef())
+				s.WriteString(col.TypeDef())
 
 				x++
 			}
