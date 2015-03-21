@@ -62,6 +62,7 @@ type columnLayout struct {
 	// unnecessary for old types.
 	needsNotNull bool         `json:"-"`
 	isPK         bool         `json:"-"`
+	hasReference bool         `json:"-"`
 	gotype       reflect.Type `json:"-"`
 	typeCast     string       `json:"-"`
 }
@@ -153,6 +154,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			TypeDef:      stype,
 			needsNotNull: notNullIgnored,
 			isPK:         colMap.isPK,
+			hasReference: colMap.References() != nil,
 			typeCast:     cast,
 			gotype:       colMap.gotype,
 		}
@@ -303,10 +305,16 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			if _, err := tx.Exec(sql); err != nil {
 				return err
 			}
-			defaultVal := reflect.New(newCol.gotype).Interface()
-			sql = "UPDATE " + quotedTable + " SET " + quotedColumn + "=" + m.dbMap.Dialect.BindVar(0)
-			if _, err := tx.Exec(sql, defaultVal); err != nil {
-				return err
+			// As of the time of this writing, we don't have a way
+			// to know whether or not the foreign key column is
+			// nillable.  If it was set to be NOT NULL, then the next
+			// operation (adding the NOT NULL constraint) will fail.
+			if !newCol.hasReference {
+				defaultVal := reflect.New(newCol.gotype).Interface()
+				sql = "UPDATE " + quotedTable + " SET " + quotedColumn + "=" + m.dbMap.Dialect.BindVar(0)
+				if _, err := tx.Exec(sql, defaultVal); err != nil {
+					return err
+				}
 			}
 			if newCol.needsNotNull {
 				// Most likely, the default value above was not null.
