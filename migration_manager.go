@@ -61,6 +61,7 @@ type columnLayout struct {
 	// Values that are only used on the new layout, but are
 	// unnecessary for old types.
 	needsNotNull bool         `json:"-"`
+	isPK         bool         `json:"-"`
 	gotype       reflect.Type `json:"-"`
 	typeCast     string       `json:"-"`
 }
@@ -151,6 +152,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			ColumnName:   colMap.ColumnName,
 			TypeDef:      stype,
 			needsNotNull: notNullIgnored,
+			isPK:         colMap.isPK,
 			typeCast:     cast,
 			gotype:       colMap.gotype,
 		}
@@ -225,6 +227,11 @@ func (m *MigrationManager) run() error {
 }
 
 func (m *MigrationManager) changeType(quotedTable string, newCol columnLayout, tx *Transaction) error {
+	if newCol.isPK {
+		// Ehrm.  Backward compatibility issue, here.  Just ignore
+		// PKeys for now.
+		return nil
+	}
 	quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
 	oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
 	sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedColumn + " TO " + oldQuotedColumn
