@@ -292,6 +292,11 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			found = strings.ToLower(oldCol.ColumnName) == strings.ToLower(newCol.ColumnName) ||
 				oldCol.FieldName != "" && oldCol.FieldName == newCol.FieldName
 			if found {
+				// Take care of the case where the difference in
+				// TypeDef is just due to gorp versions.
+				if !strings.HasPrefix(oldCol.TypeDef, m.dbMap.Dialect.QuoteField(oldCol.ColumnName)) {
+					oldCol.TypeDef = fmt.Sprintf("%s %s", m.dbMap.Dialect.QuoteField(oldCol.ColumnName), oldCol.TypeDef)
+				}
 				if oldCol.TypeDef != newCol.TypeDef {
 					if err := m.changeType(quotedTable, newCol, tx); err != nil {
 						return err
