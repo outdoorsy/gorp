@@ -57,7 +57,6 @@ type columnLayout struct {
 	hasReference bool         `json:"-"`
 	gotype       reflect.Type `json:"-"`
 	typeCast     string       `json:"-"`
-	oldFieldName string       `json:"-"`
 }
 
 type tableRecord struct {
@@ -130,26 +129,10 @@ type typeDefSwitcher interface {
 
 // deprecatedTypeDef is the old, now-deprecated TypeDef format.  We
 // want to keep it updated for a time, for rolling back purposes.
-func (m *MigrationManager) deprecatedTypeDef(colMap *ColumnMap) string {
-	var stype string
-	orig := ptrToVal(colMap.origtype).Interface()
-	dbValue := ptrToVal(colMap.gotype).Interface()
-	typer, hasDef := orig.(TypeDeffer)
-	if !hasDef && colMap.origtype != colMap.gotype {
-		typer, hasDef = dbValue.(TypeDeffer)
-	}
-	typeSwitcher, hasSwitch := orig.(typeDefSwitcher)
-	if !hasSwitch && colMap.origtype != colMap.gotype {
-		typeSwitcher, hasSwitch = dbValue.(typeDefSwitcher)
-	}
-	if hasDef {
-		stype = typer.TypeDef()
-	} else if hasSwitch {
-		stype = typeSwitcher.TypeDefSwitch()
-	} else {
-		stype = m.dbMap.Dialect.ToSqlType(colMap.gotype, colMap.MaxSize, colMap.isAutoIncr)
-	}
-	return stype
+func (m *MigrationManager) deprecatedTypeDef(newTypeDef string) string {
+	colNameStart := strings.IndexRune(newTypeDef, '"') + 1
+	colNameEnd := colNameStart + strings.IndexRune(newTypeDef[colNameStart:], '"') + 1
+	return strings.TrimSpace(newTypeDef[colNameEnd:])
 }
 
 func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
@@ -178,7 +161,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			OldFieldName: colMap.fieldName,
 			ColumnName:   colMap.ColumnName,
 			TypeDef:      stype,
-			OldTypeDef:   m.deprecatedTypeDef(colMap),
+			OldTypeDef:   m.deprecatedTypeDef(stype),
 			IsNotNull:    notNullIgnored,
 			isPK:         colMap.isPK,
 			hasReference: colMap.References() != nil,
@@ -243,20 +226,23 @@ func (m *MigrationManager) Migrate() (err error) {
 	if err != nil {
 		return err
 	}
+	m.updateOldRecords()
 	return m.run(tx)
 }
 
 func (m *MigrationManager) updateOldRecords() {
 	for _, t := range m.oldTables {
-		for i, oldCol := range t.TableLayout() {
+		layout := t.TableLayout()
+		for i, oldCol := range layout {
 			if oldCol.TypeDef == "" {
 				m.updateOldTypeDef(&oldCol)
 			}
 			if oldCol.FieldName == "" {
 				m.updateOldFieldName(t, &oldCol)
 			}
-			t.tableLayout[i] = oldCol
+			layout[i] = oldCol
 		}
+		t.SetTableLayout(layout)
 	}
 }
 
@@ -276,7 +262,9 @@ func (m *MigrationManager) updateOldFieldName(t *tableRecord, oldCol *columnLayo
 		// and set the new FieldName value appropriately.
 		for _, newTable := range m.newTableRecords() {
 			if newTable.Schemaname == t.Schemaname && newTable.Tablename == t.Tablename {
-				for i, newCol := range newTable.TableLayout() {
+				layout := newTable.TableLayout()
+				changed := false
+				for i, newCol := range layout {
 					// The old field name would look like Foo.Bar,
 					// while the new name would look like
 					// Foo.Bar.PKey.
@@ -285,9 +273,13 @@ func (m *MigrationManager) updateOldFieldName(t *tableRecord, oldCol *columnLayo
 					if newCol.hasReference && nameMatches {
 						oldCol.FieldName = newCol.FieldName
 						newCol.OldFieldName = oldCol.OldFieldName
-						newTable.tableLayout[i] = newCol
+						layout[i] = newCol
+						changed = true
 						break
 					}
+				}
+				if changed {
+					newTable.SetTableLayout(layout)
 				}
 				break
 			}
