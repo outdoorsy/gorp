@@ -44,11 +44,12 @@ func (j pgJSON) TypeDef() string {
 }
 
 type columnLayout struct {
-	FieldName  string `json:"field_name"`
-	ColumnName string `json:"column_name"`
-	OldTypeDef string `json:"type_def"`
-	TypeDef    string `json:"type_def_v2"`
-	IsNotNull  bool   `json:"is_not_null"`
+	FieldName    string `json:"field_name_v2"`
+	OldFieldName string `json:"field_name"`
+	ColumnName   string `json:"column_name"`
+	OldTypeDef   string `json:"type_def"`
+	TypeDef      string `json:"type_def_v2"`
+	IsNotNull    bool   `json:"is_not_null"`
 
 	// Values that are only used on the new layout, but are
 	// unnecessary for old types.
@@ -174,6 +175,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 
 		col := columnLayout{
 			FieldName:    colMap.fieldName,
+			OldFieldName: colMap.fieldName,
 			ColumnName:   colMap.ColumnName,
 			TypeDef:      stype,
 			OldTypeDef:   m.deprecatedTypeDef(colMap),
@@ -241,19 +243,60 @@ func (m *MigrationManager) Migrate() (err error) {
 	if err != nil {
 		return err
 	}
-	// Check the old table layout for missing current versions
-	for _, t := range m.oldTables {
-		for _, oldCol := range t.tableLayout {
-			if oldCol.TypeDef == "" {
-				quotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
-				oldCol.TypeDef = quotedColumn + " " + oldCol.OldTypeDef
-			}
-		}
-	}
 	return m.run(tx)
 }
 
+func (m *MigrationManager) updateOldRecords() {
+	for _, t := range m.oldTables {
+		for i, oldCol := range t.TableLayout() {
+			if oldCol.TypeDef == "" {
+				m.updateOldTypeDef(&oldCol)
+			}
+			if oldCol.FieldName == "" {
+				m.updateOldFieldName(t, &oldCol)
+			}
+			t.tableLayout[i] = oldCol
+		}
+	}
+}
+
+func (m *MigrationManager) updateOldTypeDef(oldCol *columnLayout) {
+	quotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
+	oldCol.TypeDef = quotedColumn + " " + oldCol.OldTypeDef
+}
+
+func (m *MigrationManager) updateOldFieldName(t *tableRecord, oldCol *columnLayout) {
+	oldCol.FieldName = oldCol.OldFieldName
+	if strings.Contains(oldCol.OldTypeDef, "references") {
+		oldDotCount := strings.Count(oldCol.OldFieldName, ".")
+		// Since we couldn't handle foreign keys
+		// automatically, before, this may have a
+		// different field name and a different column
+		// name.  We'll do our best to find the new column
+		// and set the new FieldName value appropriately.
+		for _, newTable := range m.newTableRecords() {
+			if newTable.Schemaname == t.Schemaname && newTable.Tablename == t.Tablename {
+				for i, newCol := range newTable.TableLayout() {
+					// The old field name would look like Foo.Bar,
+					// while the new name would look like
+					// Foo.Bar.PKey.
+					newDotCount := strings.Count(newCol.FieldName, ".")
+					nameMatches := oldDotCount+1 == newDotCount && strings.HasPrefix(newCol.FieldName, oldCol.OldFieldName)
+					if newCol.hasReference && nameMatches {
+						oldCol.FieldName = newCol.FieldName
+						newCol.OldFieldName = oldCol.OldFieldName
+						newTable.tableLayout[i] = newCol
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
 func (m *MigrationManager) run(tx *Transaction) error {
+	// Check the old table layout for missing current versions
 	for _, newTable := range m.newTableRecords() {
 		found := false
 		for _, oldTable := range m.oldTables {
@@ -329,11 +372,6 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord, tx *Tra
 		for _, oldCol := range oldTable.TableLayout() {
 			found = strings.ToLower(oldCol.ColumnName) == strings.ToLower(newCol.ColumnName) ||
 				oldCol.FieldName != "" && oldCol.FieldName == newCol.FieldName
-			if !found {
-				// This *only* handles conversion from the old foreign
-				// key structure to the new one.
-				found = strings.HasPrefix(newCol.FieldName, oldCol.FieldName+".")
-			}
 			if found {
 				if oldCol.TypeDef != newCol.TypeDef {
 					if err := m.changeType(quotedTable, newCol, oldCol, tx); err != nil {
