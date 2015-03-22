@@ -56,15 +56,17 @@ func (j pgJSON) TypeDef() string {
 type columnLayout struct {
 	FieldName  string `json:"field_name"`
 	ColumnName string `json:"column_name"`
-	TypeDef    string `json:"type_def"`
+	OldTypeDef string `json:"type_def"`
+	TypeDef    string `json:"type_def_v2"`
+	IsNotNull  bool   `json:"is_not_null"`
 
 	// Values that are only used on the new layout, but are
 	// unnecessary for old types.
-	needsNotNull bool         `json:"-"`
 	isPK         bool         `json:"-"`
 	hasReference bool         `json:"-"`
 	gotype       reflect.Type `json:"-"`
 	typeCast     string       `json:"-"`
+	oldFieldName string       `json:"-"`
 }
 
 type tableRecord struct {
@@ -152,7 +154,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			FieldName:    colMap.fieldName,
 			ColumnName:   colMap.ColumnName,
 			TypeDef:      stype,
-			needsNotNull: notNullIgnored,
+			IsNotNull:    notNullIgnored,
 			isPK:         colMap.isPK,
 			hasReference: colMap.References() != nil,
 			typeCast:     cast,
@@ -190,6 +192,10 @@ func (m *MigrationManager) newTableRecords() []*tableRecord {
 }
 
 func (m *MigrationManager) Migrate() (err error) {
+	tx, err := m.dbMap.Begin()
+	if err != nil {
+		panic(err)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			switch src := r.(type) {
@@ -199,75 +205,6 @@ func (m *MigrationManager) Migrate() (err error) {
 				err = fmt.Errorf("Recovered from panic: %v", src)
 			}
 		}
-	}()
-	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(m.schemaname, m.tablename)
-	_, err = m.dbMap.Select(&m.oldTables, "select * from "+quotedTable)
-	if err != nil {
-		return err
-	}
-	return m.run()
-}
-
-func (m *MigrationManager) run() error {
-	for _, newTable := range m.newTableRecords() {
-		found := false
-		for _, oldTable := range m.oldTables {
-			if oldTable.Schemaname == newTable.Schemaname && oldTable.Tablename == newTable.Tablename {
-				found = true
-				if err := m.migrateTable(oldTable, newTable); err != nil {
-					return err
-				}
-			}
-		}
-		if !found {
-			if err := m.dbMap.Insert(newTable); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (m *MigrationManager) changeType(quotedTable string, newCol columnLayout, tx *Transaction) error {
-	if newCol.isPK {
-		// Ehrm.  Backward compatibility issue, here.  Just ignore
-		// PKeys for now.
-		return nil
-	}
-	quotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
-	oldQuotedColumn := m.dbMap.Dialect.QuoteField(newCol.ColumnName + "_type_change_bak")
-	sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedColumn + " TO " + oldQuotedColumn
-	if _, err := tx.Exec(sql); err != nil {
-		return err
-	}
-	sql = "ALTER TABLE " + quotedTable + " ADD COLUMN " + newCol.TypeDef
-	if _, err := tx.Exec(sql); err != nil {
-		return err
-	}
-	sql = "UPDATE " + quotedTable + " SET " + quotedColumn + " = " + fmt.Sprintf(newCol.typeCast, oldQuotedColumn)
-	if _, err := tx.Exec(sql); err != nil {
-		return err
-	}
-	if newCol.needsNotNull {
-		// The NOT NULL constraint needs to be set *after* updating data.
-		sql = "ALTER TABLE " + quotedTable + " ALTER COLUMN " + quotedColumn + " SET NOT NULL"
-		if _, err := tx.Exec(sql); err != nil {
-			return err
-		}
-	}
-	sql = "ALTER TABLE " + quotedTable + " DROP COLUMN " + oldQuotedColumn
-	if _, err := tx.Exec(sql); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err error) {
-	tx, err := m.dbMap.Begin()
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
 		if err == nil {
 			err = tx.Commit()
 		} else {
@@ -276,6 +213,84 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			}
 		}
 	}()
+	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(m.schemaname, m.tablename)
+	_, err = m.dbMap.Select(&m.oldTables, "select * from "+quotedTable)
+	if err != nil {
+		return err
+	}
+	// Check the old table layout for missing current versions
+	for _, t := range m.oldTables {
+		for _, oldCol := range t.tableLayout {
+			if oldCol.TypeDef == "" {
+				quotedColumn := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
+				oldCol.TypeDef = quotedColumn + " " + oldCol.OldTypeDef
+			}
+		}
+	}
+	return m.run(tx)
+}
+
+func (m *MigrationManager) run(tx *Transaction) error {
+	for _, newTable := range m.newTableRecords() {
+		found := false
+		for _, oldTable := range m.oldTables {
+			if oldTable.Schemaname == newTable.Schemaname && oldTable.Tablename == newTable.Tablename {
+				found = true
+				if err := m.migrateTable(oldTable, newTable, tx); err != nil {
+					return err
+				}
+			}
+		}
+		if !found {
+			if err := tx.Insert(newTable); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *MigrationManager) changeType(quotedTable string, newCol, oldCol columnLayout, tx *Transaction) error {
+	if newCol.isPK {
+		// Ehrm.  Backward compatibility issue, here.  Just ignore
+		// PKeys for now.
+		return nil
+	}
+	quotedNewCol := m.dbMap.Dialect.QuoteField(newCol.ColumnName)
+	quotedOldCol := m.dbMap.Dialect.QuoteField(oldCol.ColumnName)
+	quotedBakCol := quotedOldCol
+	if quotedOldCol == quotedNewCol {
+		quotedBakCol = m.dbMap.Dialect.QuoteField(oldCol.ColumnName + "_type_change_bak")
+		sql := "ALTER TABLE " + quotedTable + " RENAME COLUMN " + quotedOldCol + " TO " + quotedBakCol
+		if _, err := tx.Exec(sql); err != nil {
+			return err
+		}
+	}
+	sql := "ALTER TABLE " + quotedTable + " ADD COLUMN " + newCol.TypeDef
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	sql = "UPDATE " + quotedTable + " SET " + quotedNewCol + " = " + fmt.Sprintf(newCol.typeCast, quotedBakCol)
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	if newCol.IsNotNull && oldCol.IsNotNull {
+		// If the not null setting has changed, it will be handled
+		// elsewhere; but if it is set to true on both the old column
+		// and the new column, we have to handle it here.
+		sql = "ALTER TABLE " + quotedTable + " ALTER COLUMN " + quotedNewCol + " SET NOT NULL"
+		if _, err := tx.Exec(sql); err != nil {
+			return err
+		}
+	}
+	sql = "ALTER TABLE " + quotedTable + " DROP COLUMN " + quotedBakCol
+	if _, err := tx.Exec(sql); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord, tx *Transaction) (err error) {
 	if oldTable.Schemaname != newTable.Schemaname || oldTable.Tablename != newTable.Tablename {
 		return fmt.Errorf("Unsupported operation: table name change (%s.%s to %s.%s)",
 			oldTable.Schemaname,
@@ -291,14 +306,26 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 		for _, oldCol := range oldTable.TableLayout() {
 			found = strings.ToLower(oldCol.ColumnName) == strings.ToLower(newCol.ColumnName) ||
 				oldCol.FieldName != "" && oldCol.FieldName == newCol.FieldName
+			if !found {
+				// This *only* handles conversion from the old foreign
+				// key structure to the new one.
+				found = strings.HasPrefix(newCol.FieldName, oldCol.FieldName+".")
+			}
 			if found {
-				// Take care of the case where the difference in
-				// TypeDef is just due to gorp versions.
-				if !strings.HasPrefix(oldCol.TypeDef, m.dbMap.Dialect.QuoteField(oldCol.ColumnName)) {
-					oldCol.TypeDef = fmt.Sprintf("%s %s", m.dbMap.Dialect.QuoteField(oldCol.ColumnName), oldCol.TypeDef)
-				}
 				if oldCol.TypeDef != newCol.TypeDef {
-					if err := m.changeType(quotedTable, newCol, tx); err != nil {
+					if err := m.changeType(quotedTable, newCol, oldCol, tx); err != nil {
+						return err
+					}
+				}
+				notNullOp := ""
+				if !oldCol.IsNotNull && newCol.IsNotNull {
+					notNullOp = "SET"
+				} else if oldCol.IsNotNull && !newCol.IsNotNull {
+					notNullOp = "DROP"
+				}
+				if notNullOp != "" {
+					sql := "ALTER TABLE " + quotedTable + " ALTER COLUMN " + quotedColumn + " " + notNullOp + " NOT NULL"
+					if _, err := tx.Exec(sql); err != nil {
 						return err
 					}
 				}
@@ -310,10 +337,10 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 			if _, err := tx.Exec(sql); err != nil {
 				return err
 			}
-			// As of the time of this writing, we don't have a way
-			// to know whether or not the foreign key column is
-			// nillable.  If it was set to be NOT NULL, then the next
-			// operation (adding the NOT NULL constraint) will fail.
+			// As of the time of this writing, we don't have a way to
+			// generate non-nil data for a foreign key column.  If it
+			// was set to be NOT NULL, then the next operation (adding
+			// the NOT NULL constraint) will fail.
 			if !newCol.hasReference {
 				defaultVal := reflect.New(newCol.gotype).Interface()
 				sql = "UPDATE " + quotedTable + " SET " + quotedColumn + "=" + m.dbMap.Dialect.BindVar(0)
@@ -321,10 +348,12 @@ func (m *MigrationManager) migrateTable(oldTable, newTable *tableRecord) (err er
 					return err
 				}
 			}
-			if newCol.needsNotNull {
+			if newCol.IsNotNull {
 				// Most likely, the default value above was not null.
 				//
-				// TODO: support data binding, somehow.
+				// TODO: support data binding, for when this new
+				// column can be populated with data from existing
+				// columns or some other method.
 				sql = "ALTER " + quotedTable + " ALTER COLUMN " + quotedColumn + " SET NOT NULL"
 				if _, err := tx.Exec(sql); err != nil {
 					return err
