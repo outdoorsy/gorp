@@ -9,16 +9,6 @@ import (
 	"strings"
 )
 
-// A TypeDefSwitcher is a TypeDeffer except that it won't have its type
-// defined on table creation.  Instead, its type will be changed on
-// the first migration run.  Useful for foreign keys when the target
-// table may be created later than the column.
-type TypeDefSwitcher interface {
-	// TypeDefSwitch should return the same thing as
-	// TypeDeffer.TypeDef.
-	TypeDefSwitch() string
-}
-
 // A TypeCaster includes TypeDeffer logic but can also return the SQL
 // to cast old types to its new type.
 type TypeCaster interface {
@@ -129,6 +119,38 @@ type MigrationManager struct {
 	newTables  []*tableRecord
 }
 
+// typeDefSwitcher is a deprecated interface used in an old version of
+// the migration manager.
+type typeDefSwitcher interface {
+	// TypeDefSwitch should return the same thing as
+	// TypeDeffer.TypeDef.
+	TypeDefSwitch() string
+}
+
+// deprecatedTypeDef is the old, now-deprecated TypeDef format.  We
+// want to keep it updated for a time, for rolling back purposes.
+func (m *MigrationManager) deprecatedTypeDef(colMap *ColumnMap) string {
+	var stype string
+	orig := ptrToVal(colMap.origtype).Interface()
+	dbValue := ptrToVal(colMap.gotype).Interface()
+	typer, hasDef := orig.(TypeDeffer)
+	if !hasDef && colMap.origtype != colMap.gotype {
+		typer, hasDef = dbValue.(TypeDeffer)
+	}
+	typeSwitcher, hasSwitch := orig.(typeDefSwitcher)
+	if !hasSwitch && colMap.origtype != colMap.gotype {
+		typeSwitcher, hasSwitch = dbValue.(typeDefSwitcher)
+	}
+	if hasDef {
+		stype = typer.TypeDef()
+	} else if hasSwitch {
+		stype = typeSwitcher.TypeDefSwitch()
+	} else {
+		stype = m.dbMap.Dialect.ToSqlType(colMap.gotype, colMap.MaxSize, colMap.isAutoIncr)
+	}
+	return stype
+}
+
 func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 	l := make([]columnLayout, 0, len(t.Columns))
 	for _, colMap := range t.Columns {
@@ -154,6 +176,7 @@ func (m *MigrationManager) layoutFor(t *TableMap) []columnLayout {
 			FieldName:    colMap.fieldName,
 			ColumnName:   colMap.ColumnName,
 			TypeDef:      stype,
+			OldTypeDef:   m.deprecatedTypeDef(colMap),
 			IsNotNull:    notNullIgnored,
 			isPK:         colMap.isPK,
 			hasReference: colMap.References() != nil,
