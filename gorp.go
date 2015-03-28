@@ -532,6 +532,17 @@ func (t *TableMap) ColMap(field interface{}) *ColumnMap {
 	return col
 }
 
+func colCopyWithParent(parent, child *ColumnMap) *ColumnMap {
+	childCopy := new(ColumnMap)
+	*childCopy = *child
+	index := parent.fieldIndex
+	if parent.gotype.Kind() == reflect.Slice || parent.gotype.Kind() == reflect.Array {
+		index = append(index, sliceIndexPlaceholder)
+	}
+	childCopy.fieldIndex = append(index, childCopy.fieldIndex...)
+	return childCopy
+}
+
 func colMapOrNil(t *TableMap, field interface{}) (multiJoinColumns []*ColumnMap, column *ColumnMap) {
 	fieldName, isStr := field.(string)
 	for _, col := range t.Columns {
@@ -540,19 +551,14 @@ func colMapOrNil(t *TableMap, field interface{}) (multiJoinColumns []*ColumnMap,
 				// This field may belong to a field within col's type.
 				subMultiJoins, subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinAlias()):])
 				if subcol != nil {
-					multiJoinColumns = subMultiJoins
-					// We need to return a copy of subcol, but with
-					// its fieldIndex updated to include col's
-					// fieldIndex
-					subcolCopy := new(ColumnMap)
-					*subcolCopy = *subcol
-					index := col.fieldIndex
+					multiJoinColumns = make([]*ColumnMap, 0, len(subMultiJoins)+1)
 					if col.gotype.Kind() == reflect.Slice || col.gotype.Kind() == reflect.Array {
-						index = append(index, sliceIndexPlaceholder)
-						multiJoinColumns = append([]*ColumnMap{col}, multiJoinColumns...)
+						multiJoinColumns = append(multiJoinColumns, col)
 					}
-					subcolCopy.fieldIndex = append(index, subcolCopy.fieldIndex...)
-					column = subcolCopy
+					for _, subJoin := range subMultiJoins {
+						multiJoinColumns = append(multiJoinColumns, colCopyWithParent(col, subJoin))
+					}
+					column = colCopyWithParent(col, subcol)
 					return
 				}
 			}
