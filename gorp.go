@@ -211,7 +211,7 @@ func (t *TableMap) fkeyColumns(col *ColumnMap) []*ColumnMap {
 	cols := make([]*ColumnMap, 0, len(col.targetTable.keys))
 	for _, key := range col.targetTable.keys {
 		cm := &ColumnMap{
-			ColumnName: col.JoinPrefix() + key.ColumnName,
+			ColumnName: col.joinAlias + key.ColumnName,
 			fieldIndex: append(col.fieldIndex, key.fieldIndex...),
 			fieldName:  col.fieldName + "." + key.fieldName,
 			origtype:   key.origtype,
@@ -251,7 +251,7 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 		f := typ.Field(i)
 		var (
 			columnName string
-			options    map[string]string
+			options    []string
 		)
 		fakeAnonymous := false
 		fkey := false
@@ -259,17 +259,18 @@ func (t *TableMap) readStructColumns(v reflect.Value, typ reflect.Type) (cols []
 		// Find the name and options now, in case the field needs to *act*
 		// as if it's embedded.
 		columnName, options = t.dbmap.columnNameAndOptions(f)
-		for option, value := range options {
+		for _, option := range options {
 			if option == "embed" {
 				fakeAnonymous = true
 			}
 			if option == "fkey" {
 				fkey = true
 			}
-			if option == "join" {
-				// We take care of the underscores, now.  Trim off
-				// trailing underscores for backward compatibility.
-				joinAlias = strings.TrimRight(value, "_")
+			if strings.HasPrefix(option, "join") {
+				splitIdx := strings.IndexRune(option, '=')
+				if splitIdx > 0 {
+					joinAlias = option[splitIdx+1:]
+				}
 			}
 		}
 		if fakeAnonymous && fkey {
@@ -546,9 +547,9 @@ func colMapOrNil(t *TableMap, field interface{}) (multiJoinColumns []*ColumnMap,
 	fieldName, isStr := field.(string)
 	for _, col := range t.Columns {
 		if isStr {
-			if col.targetTable != nil && strings.HasPrefix(fieldName, col.JoinPrefix()) {
+			if col.targetTable != nil && strings.HasPrefix(fieldName, col.JoinAlias()) {
 				// This field may belong to a field within col's type.
-				subMultiJoins, subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinPrefix()):])
+				subMultiJoins, subcol := colMapOrNil(col.targetTable, fieldName[len(col.JoinAlias()):])
 				if subcol != nil {
 					multiJoinColumns = make([]*ColumnMap, 0, len(subMultiJoins)+1)
 					if col.gotype.Kind() == reflect.Slice || col.gotype.Kind() == reflect.Array {
@@ -1037,12 +1038,6 @@ func (c *ColumnMap) SetJoinAlias(alias string) {
 	c.joinAlias = alias
 }
 
-// JoinPrefix returns a prefix expected to be used for columns
-// selected from a joined table for this column.
-func (c *ColumnMap) JoinPrefix() string {
-	return c.JoinAlias() + "_"
-}
-
 // References returns the table and column (in a *reference instance)
 // which this column references as a foreign key.
 //
@@ -1221,7 +1216,7 @@ func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name str
 	return tmap
 }
 
-func (m *DbMap) columnNameAndOptions(field reflect.StructField) (name string, options map[string]string) {
+func (m *DbMap) columnNameAndOptions(field reflect.StructField) (name string, options []string) {
 	tagVars := strings.Split(field.Tag.Get("db"), ",")
 	if len(tagVars) > 0 {
 		name = tagVars[0]
@@ -1229,15 +1224,8 @@ func (m *DbMap) columnNameAndOptions(field reflect.StructField) (name string, op
 	if name == "" {
 		name = strings.ToLower(field.Name)
 	}
-	options = map[string]string{}
-	for i := 1; i < len(tagVars); i++ {
-		parts := strings.SplitN(tagVars[i], "=", 2)
-		key := parts[0]
-		val := "true"
-		if len(parts) == 2 {
-			val = parts[1]
-		}
-		options[key] = val
+	if len(tagVars) > 1 {
+		options = tagVars[1:]
 	}
 	return
 }
@@ -2457,7 +2445,7 @@ func fieldIndexForColumnName(m *DbMap, table *TableMap, t reflect.Type, col stri
 		if fieldName == "-" {
 			return false
 		}
-		for option := range options {
+		for _, option := range options {
 			if option == "embed" {
 				var index []int
 				if index, joinColumns, err = fieldIndexForColumnName(m, table, field.Type, col); err == nil {
