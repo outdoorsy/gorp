@@ -2324,7 +2324,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	return list, nonFatalErr
 }
 
-func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) bool {
+func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) (exists bool) {
 	rowKeyBuf := bytes.Buffer{}
 	rowKeyBuf.WriteRune('|')
 	for _, k := range table.keys {
@@ -2340,16 +2340,16 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 		parsedRows[table.gotype] = tableValueMap
 	}
 
-	rowVal, ok := tableValueMap[rowKey]
-	if !ok {
+	var rowVal reflect.Value
+	rowVal, exists = tableValueMap[rowKey]
+	if !exists {
 		tableValueMap[rowKey] = v
-		return false
 	}
 
 	for _, joinedCols := range multiJoinCols {
 		subV := v
 		targetV := rowVal
-		newColFound := false
+		newColFound := !exists
 		keyBuf := rowKeyBuf
 		for _, subCol := range joinedCols {
 			field := subV.FieldByIndex(subCol.fieldIndex)
@@ -2390,7 +2390,7 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 			targetV = existingRow
 		}
 	}
-	return true
+	return exists
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used
