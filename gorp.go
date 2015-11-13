@@ -20,10 +20,17 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
 const sliceIndexPlaceholder = -1
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return &bytes.Buffer{}
+	},
+}
 
 // TypeDeffer is any type that can be used as a column value in the database.
 // This is mainly provided for table creation purposes.  You should use
@@ -662,8 +669,10 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 	if plan.query == "" {
 		plan.autoIncrIdx = -1
 
-		s := bytes.Buffer{}
-		s2 := bytes.Buffer{}
+		s := bufPool.Get().(*bytes.Buffer)
+		s.Reset()
+		s2 := bufPool.Get().(*bytes.Buffer)
+		s2.Reset()
 		s.WriteString(fmt.Sprintf("insert into %s (", t.dbmap.Dialect.QuotedTableForQuery(t.SchemaName, t.TableName)))
 
 		x := 0
@@ -709,6 +718,9 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 
 		plan.query = s.String()
 		t.insertPlan = plan
+
+		bufPool.Put(s)
+		bufPool.Put(s2)
 	}
 
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
@@ -718,7 +730,8 @@ func (t *TableMap) bindUpdate(elem reflect.Value) (bindInstance, error) {
 	plan := t.updatePlan
 	if plan.query == "" {
 
-		s := bytes.Buffer{}
+		s := bufPool.Get().(*bytes.Buffer)
+		s.Reset()
 		s.WriteString(fmt.Sprintf("update %s set ", t.dbmap.Dialect.QuotedTableForQuery(t.SchemaName, t.TableName)))
 		x := 0
 
@@ -767,6 +780,7 @@ func (t *TableMap) bindUpdate(elem reflect.Value) (bindInstance, error) {
 
 		plan.query = s.String()
 		t.updatePlan = plan
+		bufPool.Put(s)
 	}
 
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
@@ -776,7 +790,8 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 	plan := t.deletePlan
 	if plan.query == "" {
 
-		s := bytes.Buffer{}
+		s := bufPool.Get().(*bytes.Buffer)
+		s.Reset()
 		s.WriteString(fmt.Sprintf("delete from %s", t.dbmap.Dialect.QuotedTableForQuery(t.SchemaName, t.TableName)))
 
 		for y := range t.Columns {
@@ -813,6 +828,7 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 
 		plan.query = s.String()
 		t.deletePlan = plan
+		bufPool.Put(s)
 	}
 
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
@@ -822,7 +838,8 @@ func (t *TableMap) bindGet() bindPlan {
 	plan := t.getPlan
 	if plan.query == "" {
 
-		s := bytes.Buffer{}
+		s := bufPool.Get().(*bytes.Buffer)
+		s.Reset()
 		s.WriteString("select ")
 
 		x := 0
@@ -856,6 +873,7 @@ func (t *TableMap) bindGet() bindPlan {
 
 		plan.query = s.String()
 		t.getPlan = plan
+		bufPool.Put(s)
 	}
 
 	return plan
@@ -964,7 +982,8 @@ func (c *ColumnMap) TypeDefNoNotNull() (string, bool) {
 
 func (c *ColumnMap) typeDef(includeNotNull bool) (string, bool) {
 	dialect := c.srcTable.dbmap.Dialect
-	s := bytes.Buffer{}
+	s := bufPool.Get().(*bytes.Buffer)
+	s.Reset()
 	var stype string
 	orig := ptrToVal(c.origtype).Interface()
 	dbValue := ptrToVal(c.gotype).Interface()
@@ -977,7 +996,9 @@ func (c *ColumnMap) typeDef(includeNotNull bool) (string, bool) {
 	} else {
 		stype = dialect.ToSqlType(c.gotype, c.MaxSize, c.isAutoIncr)
 	}
-	s.WriteString(fmt.Sprintf("%s %s", dialect.QuoteField(c.ColumnName), stype))
+	s.WriteString(dialect.QuoteField(c.ColumnName))
+	s.WriteString(" ")
+	s.WriteString(stype)
 
 	notNullWasIgnored := false
 	if c.isPK || c.isNotNull {
@@ -1010,7 +1031,9 @@ func (c *ColumnMap) typeDef(includeNotNull bool) (string, bool) {
 	if c.isAutoIncr {
 		s.WriteString(fmt.Sprintf(" %s", dialect.AutoIncrStr()))
 	}
-	return s.String(), notNullWasIgnored
+	ret := s.String()
+	bufPool.Put(s)
+	return ret, notNullWasIgnored
 }
 
 // TargetTable returns the *TableMap that this column represents, for
@@ -1260,10 +1283,10 @@ func (m *DbMap) CreateTablesIfNotExists() error {
 
 func (m *DbMap) createTables(ifNotExists bool) error {
 	var err error
+	s := bufPool.Get().(*bytes.Buffer)
 	for i := range m.tables {
 		table := m.tables[i]
-
-		s := bytes.Buffer{}
+		s.Reset()
 
 		if strings.TrimSpace(table.SchemaName) != "" {
 			schemaCreate := "create schema"
@@ -1324,6 +1347,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 			break
 		}
 	}
+	bufPool.Put(s)
 	return err
 }
 
@@ -2325,7 +2349,9 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 }
 
 func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*ColumnMap, parsedRows map[reflect.Type]map[string]reflect.Value) (exists bool) {
-	rowKeyBuf := bytes.Buffer{}
+
+	rowKeyBuf := bufPool.Get().(*bytes.Buffer)
+	rowKeyBuf.Reset()
 	rowKeyBuf.WriteRune('|')
 	for _, k := range table.keys {
 		thisRowKey := v.FieldByIndex(k.fieldIndex).Interface()
@@ -2390,6 +2416,7 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 			targetV = existingRow
 		}
 	}
+	bufPool.Put(rowKeyBuf)
 	return exists
 }
 
