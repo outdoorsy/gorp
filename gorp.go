@@ -1940,14 +1940,14 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 }
 
 func selectVal(e SqlExecutor, holder interface{}, query string, args ...interface{}) error {
-	if len(args) == 1 {
-		switch m := e.(type) {
-		case *DbMap:
-			query, args = maybeExpandNamedQuery(m, query, args)
-		case *Transaction:
-			query, args = maybeExpandNamedQuery(m.dbmap, query, args)
-		}
-	}
+	// if len(args) == 1 {
+	// 	switch m := e.(type) {
+	// 	case *DbMap:
+	// 		query, args = maybeExpandNamedQuery(m, query, args)
+	// 	case *Transaction:
+	// 		query, args = maybeExpandNamedQuery(m.dbmap, query, args)
+	// 	}
+	// }
 	rows, err := e.query(query, args...)
 	if err != nil {
 		return err
@@ -2205,12 +2205,14 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		intoStruct = t.Kind() == reflect.Struct
 	}
 
+	// tylerb - removed the named parameter query entirely as we are never using
+	// it and it is causing issues with composed time objects
 	// If the caller supplied a single struct/map argument, assume a "named
 	// parameter" query.  Extract the named arguments from the struct/map, create
 	// the flat arg slice, and rewrite the query to use the dialect's placeholder.
-	if len(args) == 1 {
-		query, args = maybeExpandNamedQuery(m, query, args)
-	}
+	// if len(args) == 1 {
+	// 	query, args = maybeExpandNamedQuery(m, query, args)
+	// }
 
 	// Run the query
 	rows, err := exec.query(query, args...)
