@@ -2010,10 +2010,26 @@ type fieldBinder struct {
 	retErr error
 }
 
+var (
+	nullString  = reflect.TypeOf((*sql.NullString)(nil))
+	nullInt64   = reflect.TypeOf((*sql.NullInt64)(nil))
+	nullFloat64 = reflect.TypeOf((*sql.NullFloat64)(nil))
+	nullBool    = reflect.TypeOf((*sql.NullBool)(nil))
+)
+
 func (b *fieldBinder) Bind() error {
 	val := b.holder
 	valIsNil := false
-	if b.nilSetter.IsValid() {
+
+	// special handling for nullable sql types. without this, joins fail because
+	// a top-level non-pointer field is null. this can probably be improved.
+	vt := val.Type()
+	isNullable := vt.AssignableTo(nullString) ||
+		vt.AssignableTo(nullInt64) ||
+		vt.AssignableTo(nullFloat64) ||
+		vt.AssignableTo(nullBool)
+
+	if b.nilSetter.IsValid() && !isNullable {
 		// If the field can be set to nil, then b.holder is guaranteed
 		// to be nillable.
 		valIsNil = val.IsNil()
@@ -2033,7 +2049,27 @@ func (b *fieldBinder) Bind() error {
 	// if b.valueSetter is not valid, it means that the holder was the
 	// field, so there's nothing more to do.
 	if !valIsNil && b.valueSetter.IsValid() {
-		b.valueSetter.Set(val)
+		if isNullable {
+			// handle our nullable types properly. if we have something to copy
+			// over, grab the value and scan it in, otherwise send a nil for the
+			// scanner to handle
+			var data interface{}
+			var err error
+			if !val.IsNil() {
+				data, err = val.Interface().(driver.Valuer).Value()
+				if err != nil {
+					return err
+				}
+			}
+			// fmt.Println("got data of", data, val.IsNil())
+			err = b.valueSetter.Addr().Interface().(sql.Scanner).Scan(data)
+			if err != nil {
+				return err
+			}
+			// fmt.Println("set that data")
+		} else {
+			b.valueSetter.Set(val)
+		}
 	}
 	if b.binder != nil {
 		err := b.binder.Bind()
