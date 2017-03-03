@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+var MigrationInProgessErr = errors.New("migration is already in progress")
+
 // A TypeCaster includes TypeDeffer logic but can also return the SQL
 // to cast old types to its new type.
 type TypeCaster interface {
@@ -222,8 +224,13 @@ func (m *MigrationManager) Migrate() (err error) {
 		}
 	}()
 	quotedTable := m.dbMap.Dialect.QuotedTableForQuery(m.schemaname, m.tablename)
-	_, err = m.dbMap.Select(&m.oldTables, "select * from "+quotedTable)
+
+	_, err = tx.Select(&m.oldTables, "select * from "+quotedTable+" for update nowait")
+
 	if err != nil {
+		if strings.Contains(err.Error(), "could not obtain") {
+			return MigrationInProgessErr
+		}
 		return err
 	}
 	m.updateOldRecords()
