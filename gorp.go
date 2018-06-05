@@ -2820,9 +2820,11 @@ func delete(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 		count += rows
 
 		if v, ok := eval.(HasPostDelete); ok {
-			err := v.PostDelete(exec)
-			if err != nil {
-				return -1, err
+			if _, ok := exec.(*Transaction); !ok {
+				err := v.PostDelete(exec)
+				if err != nil {
+					return -1, err
+				}
 			}
 		}
 	}
@@ -2873,9 +2875,11 @@ func update(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 		count += rows
 
 		if v, ok := eval.(HasPostUpdate); ok {
-			err = v.PostUpdate(exec)
-			if err != nil {
-				return -1, err
+			if _, ok := exec.(*Transaction); !ok {
+				err = v.PostUpdate(exec)
+				if err != nil {
+					return -1, err
+				}
 			}
 		}
 	}
@@ -2934,9 +2938,11 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 		}
 
 		if v, ok := eval.(HasPostInsert); ok {
-			err := v.PostInsert(exec)
-			if err != nil {
-				return err
+			if _, ok := exec.(*Transaction); !ok {
+				err := v.PostInsert(exec)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
