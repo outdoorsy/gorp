@@ -1782,17 +1782,17 @@ func (t *Transaction) Commit() error {
 		// run post commit hooks
 		for _, o := range t.insertList {
 			if v, ok := o.(HasPostInsertCommitted); ok {
-				v.PostInsertCommitted()
+				v.PostInsertCommitted(t.dbmap)
 			}
 		}
 		for _, o := range t.updateList {
 			if v, ok := o.(HasPostUpdateCommitted); ok {
-				v.PostUpdateCommitted()
+				v.PostUpdateCommitted(t.dbmap)
 			}
 		}
 		for _, o := range t.deleteList {
 			if v, ok := o.(HasPostDeleteCommitted); ok {
-				v.PostDeleteCommitted()
+				v.PostDeleteCommitted(t.dbmap)
 			}
 		}
 
@@ -3007,17 +3007,17 @@ type HasPostCommitUniqueID interface {
 // PostDeleteCommitted() will be executed after the DELETE statement commits in
 // a transaction.
 type HasPostDeleteCommitted interface {
-	PostDeleteCommitted()
+	PostDeleteCommitted(SqlExecutor)
 }
 
 // PostUpdateCommitted() will be executed after the UPDATE statement commits in
 // a transaction.
 type HasPostUpdateCommitted interface {
-	PostUpdateCommitted()
+	PostUpdateCommitted(SqlExecutor)
 }
 
 // PostInsertCommitted() will be executed after the UPDATE statement commits in
 // a transaction.
 type HasPostInsertCommitted interface {
-	PostInsertCommitted()
+	PostInsertCommitted(SqlExecutor)
 }
