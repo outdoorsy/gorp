@@ -22,8 +22,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/guregu/null/zero"
 )
 
 const sliceIndexPlaceholder = -1
@@ -2075,10 +2073,6 @@ var (
 	nullInt64   = reflect.TypeOf((*sql.NullInt64)(nil))
 	nullFloat64 = reflect.TypeOf((*sql.NullFloat64)(nil))
 	nullBool    = reflect.TypeOf((*sql.NullBool)(nil))
-	zeroString  = reflect.TypeOf((*zero.String)(nil))
-	zeroInt64   = reflect.TypeOf((*zero.Int)(nil))
-	zeroFloat64 = reflect.TypeOf((*zero.Float)(nil))
-	zeroBool    = reflect.TypeOf((*zero.Bool)(nil))
 )
 
 func (b *fieldBinder) Bind() error {
@@ -2091,11 +2085,7 @@ func (b *fieldBinder) Bind() error {
 	isNullable := vt.AssignableTo(nullString) ||
 		vt.AssignableTo(nullInt64) ||
 		vt.AssignableTo(nullFloat64) ||
-		vt.AssignableTo(nullBool) ||
-		vt.AssignableTo(zeroString) ||
-		vt.AssignableTo(zeroInt64) ||
-		vt.AssignableTo(zeroFloat64) ||
-		vt.AssignableTo(zeroBool)
+		vt.AssignableTo(nullBool)
 
 	if b.nilSetter.IsValid() && !isNullable {
 		// If the field can be set to nil, then b.holder is guaranteed
