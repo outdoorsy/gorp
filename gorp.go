@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const sliceIndexPlaceholder = -1
@@ -2073,6 +2075,7 @@ var (
 	nullInt64   = reflect.TypeOf((*sql.NullInt64)(nil))
 	nullFloat64 = reflect.TypeOf((*sql.NullFloat64)(nil))
 	nullBool    = reflect.TypeOf((*sql.NullBool)(nil))
+	nullTime    = reflect.TypeOf((*pq.NullTime)(nil))
 )
 
 func (b *fieldBinder) Bind() error {
@@ -2085,7 +2088,8 @@ func (b *fieldBinder) Bind() error {
 	isNullable := vt.AssignableTo(nullString) ||
 		vt.AssignableTo(nullInt64) ||
 		vt.AssignableTo(nullFloat64) ||
-		vt.AssignableTo(nullBool)
+		vt.AssignableTo(nullBool) ||
+		vt.AssignableTo(nullTime)
 
 	if b.nilSetter.IsValid() && !isNullable {
 		// If the field can be set to nil, then b.holder is guaranteed
