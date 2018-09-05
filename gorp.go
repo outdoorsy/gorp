@@ -1682,13 +1682,15 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 		if v, ok := incoming.(HasPostCommitUniqueID); ok {
 			incomingID = v.PostCommitUniqueID()
 		}
+		incomingType := reflect.TypeOf(incoming)
 		for _, existing := range slice {
 			// check to see if the incoming object satisfies our interface
 			var existingID interface{}
 			if v, ok := existing.(HasPostCommitUniqueID); ok {
 				existingID = v.PostCommitUniqueID()
 			}
-			if incomingID != nil && existingID != nil {
+			existingType := reflect.TypeOf(existing)
+			if incomingType == existingType && incomingID != nil && existingID != nil {
 				if reflect.DeepEqual(incomingID, existingID) {
 					found = true
 					break
