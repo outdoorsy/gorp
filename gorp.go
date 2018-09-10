@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2125,12 +2126,10 @@ func (b *fieldBinder) Bind() error {
 					return err
 				}
 			}
-			// fmt.Println("got data of", data, val.IsNil())
 			err = b.valueSetter.Addr().Interface().(sql.Scanner).Scan(data)
 			if err != nil {
 				return err
 			}
-			// fmt.Println("set that data")
 		} else {
 			b.valueSetter.Set(val)
 		}
@@ -2277,6 +2276,8 @@ type binder interface {
 	Bind() error
 }
 
+const scanErrorPrefix = "sql: Scan error on column index "
+
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 	var (
@@ -2409,6 +2410,21 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 
 		err = rows.Scan(dest...)
 		if err != nil {
+			errString := err.Error()
+			if strings.Contains(errString, scanErrorPrefix) {
+				// pull out the column index
+				sis := len(scanErrorPrefix)
+				sie := strings.Index(errString[sis:], ":")
+				if sie == -1 {
+					return nil, err
+				}
+				idx, convErr := strconv.Atoi(errString[sis : sis+sie])
+				if convErr != nil {
+					return nil, fmt.Errorf("%s: failed to extract column name: %s", err, convErr)
+				}
+				// create a new error containing the column name
+				return nil, fmt.Errorf("%s: column name: %s", err, cols[idx])
+			}
 			return nil, err
 		}
 
