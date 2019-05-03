@@ -1364,34 +1364,34 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 // if the table does not exist.
 func (m *DbMap) DropTable(table interface{}) error {
 	t := reflect.TypeOf(table)
-	return m.dropTable(t, false)
+	return m.dropTable(t, false, false)
 }
 
 // DropTable drops an individual table.  Will NOT throw an error
 // if the table does not exist.
 func (m *DbMap) DropTableIfExists(table interface{}) error {
 	t := reflect.TypeOf(table)
-	return m.dropTable(t, true)
+	return m.dropTable(t, true, false)
 }
 
 // DropTables iterates through TableMaps registered to this DbMap and
 // executes "drop table" statements against the database for each.
 func (m *DbMap) DropTables() error {
-	return m.dropTables(false)
+	return m.dropTables(false, true)
 }
 
 // DropTablesIfExists is the same as DropTables, but uses the "if exists" clause to
 // avoid errors for tables that do not exist.
 func (m *DbMap) DropTablesIfExists() error {
-	return m.dropTables(true)
+	return m.dropTables(true, true)
 }
 
 // Goes through all the registered tables, dropping them one by one.
 // If an error is encountered, then it is returned and the rest of
 // the tables are not dropped.
-func (m *DbMap) dropTables(addIfExists bool) (err error) {
+func (m *DbMap) dropTables(addIfExists, cascade bool) (err error) {
 	for _, table := range m.tables {
-		err = m.dropTableImpl(table, addIfExists)
+		err = m.dropTableImpl(table, addIfExists, cascade)
 		if err != nil {
 			return
 		}
@@ -1400,21 +1400,26 @@ func (m *DbMap) dropTables(addIfExists bool) (err error) {
 }
 
 // Implementation of dropping a single table.
-func (m *DbMap) dropTable(t reflect.Type, addIfExists bool) error {
+func (m *DbMap) dropTable(t reflect.Type, addIfExists, cascade bool) error {
 	table := tableOrNil(m, t)
 	if table == nil {
 		return errors.New(fmt.Sprintf("table %s was not registered!", table.TableName))
 	}
 
-	return m.dropTableImpl(table, addIfExists)
+	return m.dropTableImpl(table, addIfExists, cascade)
 }
 
-func (m *DbMap) dropTableImpl(table *TableMap, ifExists bool) (err error) {
+func (m *DbMap) dropTableImpl(table *TableMap, ifExists, cascade bool) (err error) {
 	tableDrop := "drop table"
 	if ifExists {
 		tableDrop = m.Dialect.IfTableExists(tableDrop, table.SchemaName, table.TableName)
 	}
-	_, err = m.Exec(fmt.Sprintf("%s %s;", tableDrop, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
+	dropQuery := fmt.Sprintf("%s %s", tableDrop, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName))
+	if cascade {
+		dropQuery = fmt.Sprintf("%s %s", dropQuery, m.Dialect.Cascade())
+	}
+	dropQuery = dropQuery + ";"
+	_, err = m.Exec(dropQuery)
 	return err
 }
 
@@ -1426,7 +1431,7 @@ func (m *DbMap) TruncateTables() error {
 	var err error
 	for i := range m.tables {
 		table := m.tables[i]
-		_, e := m.Exec(fmt.Sprintf("%s %s;", m.Dialect.TruncateClause(), m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
+		_, e := m.Exec(fmt.Sprintf("%s %s %s;", m.Dialect.TruncateClause(), m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName), m.Dialect.Cascade()))
 		if e != nil {
 			err = e
 		}

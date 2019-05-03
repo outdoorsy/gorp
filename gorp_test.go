@@ -1761,7 +1761,7 @@ func TestSingleColumnKeyDbReturnsZeroRowsUpdatedOnPKChange(t *testing.T) {
 	}
 	err = dbmap.TruncateTables()
 	if err != nil {
-		t.Error("Truncate tables failed")
+		t.Errorf("Truncate tables failed with %s", err)
 	}
 
 	sct := SingleColumnTable{
