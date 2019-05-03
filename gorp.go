@@ -2942,7 +2942,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 				} else if (k == reflect.Uint) || (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
 					f.SetUint(uint64(id))
 				} else {
-					return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldIdx=%s", bi.query, bi.autoIncrIdx, bi.autoIncrFieldIdx)
+					return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldIdx=%v", bi.query, bi.autoIncrIdx, bi.autoIncrFieldIdx)
 				}
 			case TargetedAutoIncrInserter:
 				err := inserter.InsertAutoIncrToTarget(exec, bi.query, f.Addr().Interface(), bi.args...)

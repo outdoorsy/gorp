@@ -595,72 +595,75 @@ func TestNamedQueryMap(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-
-	// Test simple case
 	var puArr []*PersistentUser
-	_, err = dbmap.Select(&puArr, "select * from PersistentUser where mykey = :Key", map[string]interface{}{
-		"Key": 43,
-	})
-	if err != nil {
-		t.Errorf("Failed to select: %s", err)
-		t.FailNow()
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
-	if !reflect.DeepEqual(pu, puArr[0]) {
-		t.Errorf("%v!=%v", pu, puArr[0])
-	}
 
-	// Test more specific map value type is ok
-	puArr = nil
-	_, err = dbmap.Select(&puArr, "select * from PersistentUser where mykey = :Key", map[string]int{
-		"Key": 43,
-	})
-	if err != nil {
-		t.Errorf("Failed to select: %s", err)
-		t.FailNow()
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
+	t.Run("Named Query Tests", func(t *testing.T) {
+		t.Skip("Skipped Tests due to removal out of maybeExpandNamedQuery")
+		// Test simple case
+		_, err = dbmap.Select(&puArr, "select * from PersistentUser where mykey = :Key", map[string]interface{}{
+			"Key": 43,
+		})
+		if err != nil {
+			t.Errorf("Failed to select: %s", err)
+			t.FailNow()
+		}
+		if len(puArr) != 1 {
+			t.Errorf("Expected one persistentuser, found none")
+		}
+		if !reflect.DeepEqual(pu, puArr[0]) {
+			t.Errorf("%v!=%v", pu, puArr[0])
+		}
 
-	// Test multiple parameters set.
-	puArr = nil
-	_, err = dbmap.Select(&puArr, `
+		// Test more specific map value type is ok
+		puArr = nil
+		_, err = dbmap.Select(&puArr, "select * from PersistentUser where mykey = :Key", map[string]int{
+			"Key": 43,
+		})
+		if err != nil {
+			t.Errorf("Failed to select: %s", err)
+			t.FailNow()
+		}
+		if len(puArr) != 1 {
+			t.Errorf("Expected one persistentuser, found none")
+		}
+
+		// Test multiple parameters set.
+		puArr = nil
+		_, err = dbmap.Select(&puArr, `
 select * from PersistentUser
  where mykey = :Key
    and PassedTraining = :PassedTraining
    and Id = :Id`, map[string]interface{}{
-		"Key":            43,
-		"PassedTraining": false,
-		"Id":             "33r",
-	})
-	if err != nil {
-		t.Errorf("Failed to select: %s", err)
-		t.FailNow()
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
+			"Key":            43,
+			"PassedTraining": false,
+			"Id":             "33r",
+		})
+		if err != nil {
+			t.Errorf("Failed to select: %s", err)
+			t.FailNow()
+		}
+		if len(puArr) != 1 {
+			t.Errorf("Expected one persistentuser, found none")
+		}
 
-	// Test colon within a non-key string
-	// Test having extra, unused properties in the map.
-	puArr = nil
-	_, err = dbmap.Select(&puArr, `
+		// Test colon within a non-key string
+		// Test having extra, unused properties in the map.
+		puArr = nil
+		_, err = dbmap.Select(&puArr, `
 select * from PersistentUser
  where mykey = :Key
    and Id != 'abc:def'`, map[string]interface{}{
-		"Key":            43,
-		"PassedTraining": false,
+			"Key":            43,
+			"PassedTraining": false,
+		})
+		if err != nil {
+			t.Errorf("Failed to select: %s", err)
+			t.FailNow()
+		}
+		if len(puArr) != 1 {
+			t.Errorf("Expected one persistentuser, found none")
+		}
 	})
-	if err != nil {
-		t.Errorf("Failed to select: %s", err)
-		t.FailNow()
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
 }
 
 func TestNamedQueryStruct(t *testing.T) {
@@ -681,23 +684,26 @@ func TestNamedQueryStruct(t *testing.T) {
 		panic(err)
 	}
 
-	// Test select self
-	var puArr []*PersistentUser
-	_, err = dbmap.Select(&puArr, `
+	t.Run("Named Query Tests", func(t *testing.T) {
+		t.Skip("Skipped Tests due to removal out of maybeExpandNamedQuery")
+		// Test select self
+		var puArr []*PersistentUser
+		_, err = dbmap.Select(&puArr, `
 select * from PersistentUser
  where mykey = :Key
    and PassedTraining = :PassedTraining
    and Id = :Id`, pu)
-	if err != nil {
-		t.Errorf("Failed to select: %s", err)
-		t.FailNow()
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
-	if !reflect.DeepEqual(pu, puArr[0]) {
-		t.Errorf("%v!=%v", pu, puArr[0])
-	}
+		if err != nil {
+			t.Errorf("Failed to select: %s", err)
+			t.FailNow()
+		}
+		if len(puArr) != 1 {
+			t.Errorf("Expected one persistentuser, found none")
+		}
+		if !reflect.DeepEqual(pu, puArr[0]) {
+			t.Errorf("%v!=%v", pu, puArr[0])
+		}
+	})
 }
 
 // Ensure that the slices containing SQL results are non-nil when the result set is empty.
@@ -1270,15 +1276,15 @@ func TestSelectVal(t *testing.T) {
 	// SelectFloat
 	f64 := selectFloat(dbmap, "select Float64 from TableWithNull where Str='abc'")
 	if f64 != 32.2 {
-		t.Errorf("float64 %d != 32.2", f64)
+		t.Errorf("float64 %v != 32.2", f64)
 	}
 	f64 = selectFloat(dbmap, "select min(Float64) from TableWithNull")
 	if f64 != 32.2 {
-		t.Errorf("float64 min %d != 32.2", f64)
+		t.Errorf("float64 min %v != 32.2", f64)
 	}
 	f64 = selectFloat(dbmap, "select count(*) from TableWithNull where Str="+bindVar, "asdfasdf")
 	if f64 != 0 {
-		t.Errorf("float64 no rows %d != 0", f64)
+		t.Errorf("float64 no rows %v != 0", f64)
 	}
 
 	// SelectNullFloat
@@ -1312,15 +1318,18 @@ func TestSelectVal(t *testing.T) {
 		t.Errorf("nullstr no rows %v != '',false", ns)
 	}
 
-	// SelectInt/Str with named parameters
-	i64 = selectInt(dbmap, "select Int64 from TableWithNull where Str=:abc", map[string]string{"abc": "abc"})
-	if i64 != 78 {
-		t.Errorf("int64 %d != 78", i64)
-	}
-	ns = selectNullStr(dbmap, "select Str from TableWithNull where Int64=:num", map[string]int{"num": 78})
-	if !reflect.DeepEqual(ns, sql.NullString{"abc", true}) {
-		t.Errorf("nullstr %v != abc,true", ns)
-	}
+	t.Run("Named Query Tests", func(t *testing.T) {
+		t.Skip("Skipped Tests due to removal out of maybeExpandNamedQuery")
+		// SelectInt/Str with named parameters
+		i64 = selectInt(dbmap, "select Int64 from TableWithNull where Str=:abc", map[string]string{"abc": "abc"})
+		if i64 != 78 {
+			t.Errorf("int64 %d != 78", i64)
+		}
+		ns = selectNullStr(dbmap, "select Str from TableWithNull where Int64=:num", map[string]int{"num": 78})
+		if !reflect.DeepEqual(ns, sql.NullString{"abc", true}) {
+			t.Errorf("nullstr %v != abc,true", ns)
+		}
+	})
 }
 
 func TestVersionMultipleRows(t *testing.T) {
@@ -1543,23 +1552,28 @@ func TestSelectTooManyCols(t *testing.T) {
 	obj = _get(dbmap, Person{}, p2.Id)
 	p2 = obj.(*Person)
 
-	params := map[string]interface{}{
-		"Id": p1.Id,
-	}
+	var err error
 
-	var p3 FNameOnly
-	err := dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
-	if err != nil {
-		if !NonFatalError(err) {
-			t.Error(err)
+	t.Run("Named Query Tests", func(t *testing.T) {
+		t.Skip("Skipped Tests due to removal out of maybeExpandNamedQuery")
+		params := map[string]interface{}{
+			"Id": p1.Id,
 		}
-	} else {
-		t.Errorf("Non-fatal error expected")
-	}
 
-	if p1.FName != p3.FName {
-		t.Errorf("%v != %v", p1.FName, p3.FName)
-	}
+		var p3 FNameOnly
+		err := dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
+		if err != nil {
+			if !NonFatalError(err) {
+				t.Error(err)
+			}
+		} else {
+			t.Errorf("Non-fatal error expected")
+		}
+
+		if p1.FName != p3.FName {
+			t.Errorf("%v != %v", p1.FName, p3.FName)
+		}
+	})
 
 	var pSlice []FNameOnly
 	_, err = dbmap.Select(&pSlice, "select * from person_test order by fname asc")
@@ -1588,62 +1602,67 @@ func TestSelectSingleVal(t *testing.T) {
 
 	obj := _get(dbmap, Person{}, p1.Id)
 	p1 = obj.(*Person)
-
-	params := map[string]interface{}{
-		"Id": p1.Id,
-	}
-
 	var p2 Person
-	err := dbmap.SelectOne(&p2, "select * from person_test where Id=:Id", params)
-	if err != nil {
-		t.Error(err)
-	}
+	var err error
 
-	if !reflect.DeepEqual(p1, &p2) {
-		t.Errorf("%v != %v", p1, &p2)
-	}
+	t.Run("named query tests", func(t *testing.T) {
+		t.Skip("Skipped Tests due to removal out of maybeExpandNamedQuery")
 
-	// verify SelectOne allows non-struct holders
-	var s string
-	err = dbmap.SelectOne(&s, "select FName from person_test where Id=:Id", params)
-	if err != nil {
-		t.Error(err)
-	}
-	if s != "bob" {
-		t.Error("Expected bob but got: " + s)
-	}
+		params := map[string]interface{}{
+			"Id": p1.Id,
+		}
 
-	// verify SelectOne requires pointer receiver
-	err = dbmap.SelectOne(s, "select FName from person_test where Id=:Id", params)
-	if err == nil {
-		t.Error("SelectOne should have returned error for non-pointer holder")
-	}
+		err := dbmap.SelectOne(&p2, "select * from person_test where Id=:Id", params)
+		if err != nil {
+			t.Error(err)
+		}
 
-	// verify SelectOne works with uninitialized pointers
-	var p3 *Person
-	err = dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
-	if err != nil {
-		t.Error(err)
-	}
+		if !reflect.DeepEqual(p1, &p2) {
+			t.Errorf("%v != %v", p1, &p2)
+		}
 
-	if !reflect.DeepEqual(p1, p3) {
-		t.Errorf("%v != %v", p1, p3)
-	}
+		// verify SelectOne allows non-struct holders
+		var s string
+		err = dbmap.SelectOne(&s, "select FName from person_test where Id=:Id", params)
+		if err != nil {
+			t.Error(err)
+		}
+		if s != "bob" {
+			t.Error("Expected bob but got: " + s)
+		}
 
-	// verify that the receiver is still nil if nothing was found
-	var p4 *Person
-	dbmap.SelectOne(&p3, "select * from person_test where 2<1 AND Id=:Id", params)
-	if p4 != nil {
-		t.Error("SelectOne should not have changed a nil receiver when no rows were found")
-	}
+		// verify SelectOne requires pointer receiver
+		err = dbmap.SelectOne(s, "select FName from person_test where Id=:Id", params)
+		if err == nil {
+			t.Error("SelectOne should have returned error for non-pointer holder")
+		}
 
-	// verify that the error is set to sql.ErrNoRows if not found
-	err = dbmap.SelectOne(&p2, "select * from person_test where Id=:Id", map[string]interface{}{
-		"Id": -2222,
+		// verify SelectOne works with uninitialized pointers
+		var p3 *Person
+		err = dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
+		if err != nil {
+			t.Error(err)
+		}
+
+		if !reflect.DeepEqual(p1, p3) {
+			t.Errorf("%v != %v", p1, p3)
+		}
+
+		// verify that the receiver is still nil if nothing was found
+		var p4 *Person
+		dbmap.SelectOne(&p3, "select * from person_test where 2<1 AND Id=:Id", params)
+		if p4 != nil {
+			t.Error("SelectOne should not have changed a nil receiver when no rows were found")
+		}
+
+		// verify that the error is set to sql.ErrNoRows if not found
+		err = dbmap.SelectOne(&p2, "select * from person_test where Id=:Id", map[string]interface{}{
+			"Id": -2222,
+		})
+		if err == nil || err != sql.ErrNoRows {
+			t.Error("SelectOne should have returned an sql.ErrNoRows")
+		}
 	})
-	if err == nil || err != sql.ErrNoRows {
-		t.Error("SelectOne should have returned an sql.ErrNoRows")
-	}
 
 	_insert(dbmap, &Person{0, 0, 0, "bob", "smith", 0})
 	err = dbmap.SelectOne(&p2, "select * from person_test where Fname='bob'")
@@ -1940,7 +1959,7 @@ func initDbMap() *DbMap {
 	mainTable := dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
 	dbmap.AddTableWithName(MtoMThree{}, "many_to_many_three").SetKeys(true, "ID")
 	mainTable.ManyToManyWithName(MtoMThreeMapper{}, "one_three_map").SetKeys(true, "MapID")
-	dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
+	// dbmap.AddTableWithName(MtoMOne{}, "many_to_many_one").SetKeys(true, "ID")
 
 	dbmap.TypeConverter = testTypeConverter{}
 	err := dbmap.DropTablesIfExists()
