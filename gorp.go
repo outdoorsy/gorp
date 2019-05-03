@@ -13,6 +13,7 @@ package gorp
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -195,6 +196,8 @@ type DbMap struct {
 	tables    []*TableMap
 	logger    GorpLogger
 	logPrefix string
+
+	ctx context.Context
 }
 
 // TableMap represents a mapping between a Go struct and a database table
@@ -1136,6 +1139,7 @@ type Transaction struct {
 	insertList []interface{}
 	updateList []interface{}
 	deleteList []interface{}
+	ctx        context.Context
 }
 
 // SqlExecutor exposes gorp operations that can be run from Pre/Post
@@ -1145,13 +1149,13 @@ type Transaction struct {
 // See the DbMap function docs for each of the functions below for more
 // information.
 type SqlExecutor interface {
+	WithContext(ctx context.Context) SqlExecutor
 	Get(i interface{}, keys ...interface{}) (interface{}, error)
 	Insert(list ...interface{}) error
 	Update(list ...interface{}) (int64, error)
 	Delete(list ...interface{}) (int64, error)
 	Exec(query string, args ...interface{}) (sql.Result, error)
-	Select(i interface{}, query string,
-		args ...interface{}) ([]interface{}, error)
+	Select(i interface{}, query string, args ...interface{}) ([]interface{}, error)
 	SelectInt(query string, args ...interface{}) (int64, error)
 	SelectNullInt(query string, args ...interface{}) (sql.NullInt64, error)
 	SelectFloat(query string, args ...interface{}) (float64, error)
@@ -1169,6 +1173,15 @@ var _, _ SqlExecutor = &DbMap{}, &Transaction{}
 
 type GorpLogger interface {
 	Printf(format string, v ...interface{})
+}
+
+// WithContext will return a copy of the DbMap with a context set and used for
+// every query executed
+func (m *DbMap) WithContext(ctx context.Context) SqlExecutor {
+	copy := &DbMap{}
+	*copy = *m
+	copy.ctx = ctx
+	return copy
 }
 
 // TraceOn turns on SQL statement logging for this DbMap.  After this is
@@ -1527,7 +1540,7 @@ func (m *DbMap) Select(i interface{}, query string, args ...interface{}) ([]inte
 // This is equivalent to running:  Exec() using database/sql
 func (m *DbMap) Exec(query string, args ...interface{}) (sql.Result, error) {
 	m.trace(query, args...)
-	return m.Db.Exec(query, args...)
+	return exec(m, query, args...)
 }
 
 // SelectInt is a convenience wrapper around the gorp.SelectInt function
@@ -1568,11 +1581,11 @@ func (m *DbMap) SelectOne(holder interface{}, query string, args ...interface{})
 // Begin starts a gorp Transaction
 func (m *DbMap) Begin() (*Transaction, error) {
 	m.trace("begin;")
-	tx, err := m.Db.Begin()
+	tx, err := begin(m)
 	if err != nil {
 		return nil, err
 	}
-	return &Transaction{m, tx, false, nil, nil, nil}, nil
+	return &Transaction{m, tx, false, nil, nil, nil, nil}, nil
 }
 
 // TableFor returns the *TableMap corresponding to the given Go Type
@@ -1598,7 +1611,7 @@ func (m *DbMap) TableFor(t reflect.Type, checkPK bool) (*TableMap, error) {
 // This is equivalent to running:  Prepare() using database/sql
 func (m *DbMap) Prepare(query string) (*sql.Stmt, error) {
 	m.trace(query, nil)
-	return m.Db.Prepare(query)
+	return prepare(m, query)
 }
 
 func tableOrNil(m *DbMap, t reflect.Type) *TableMap {
@@ -1630,10 +1643,10 @@ func (m *DbMap) tableForPointer(ptr interface{}, checkPK bool) (*TableMap, refle
 
 func (m *DbMap) queryRow(query string, args ...interface{}) *sql.Row {
 	m.trace(query, args...)
-	return m.Db.QueryRow(query, args...)
+	return queryRow(m, query, args...)
 }
 
-func (m *DbMap) query(query string, args ...interface{}) (*sql.Rows, error) {
+func (m *DbMap) query(q string, args ...interface{}) (*sql.Rows, error) {
 	if m.TypeConverter != nil {
 		var convErr error
 		for index, value := range args {
@@ -1644,8 +1657,8 @@ func (m *DbMap) query(query string, args ...interface{}) (*sql.Rows, error) {
 			args[index] = value
 		}
 	}
-	m.trace(query, args...)
-	return m.Db.Query(query, args...)
+	m.trace(q, args...)
+	return query(m, q, args...)
 }
 
 func (m *DbMap) trace(query string, args ...interface{}) {
@@ -1710,6 +1723,15 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 	return slice
 }
 
+// WithContext will return a copy of the DbMap with a context set and used for
+// every query executed
+func (t *Transaction) WithContext(ctx context.Context) SqlExecutor {
+	copy := &Transaction{}
+	*copy = *t
+	copy.ctx = ctx
+	return copy
+}
+
 // Insert has the same behavior as DbMap.Insert(), but runs in a transaction.
 func (t *Transaction) Insert(list ...interface{}) error {
 	t.insertList = appendUnique(t.insertList, list...)
@@ -1741,7 +1763,7 @@ func (t *Transaction) Select(i interface{}, query string, args ...interface{}) (
 // Exec has the same behavior as DbMap.Exec(), but runs in a transaction.
 func (t *Transaction) Exec(query string, args ...interface{}) (sql.Result, error) {
 	t.dbmap.trace(query, args...)
-	return t.tx.Exec(query, args...)
+	return exec(t, query, args...)
 }
 
 // SelectInt is a convenience wrapper around the gorp.SelectInt function.
@@ -1829,7 +1851,7 @@ func (t *Transaction) Rollback() error {
 func (t *Transaction) Savepoint(name string) error {
 	query := "savepoint " + t.dbmap.Dialect.QuoteField(name)
 	t.dbmap.trace(query, nil)
-	_, err := t.tx.Exec(query)
+	_, err := exec(t, query)
 	return err
 }
 
@@ -1839,7 +1861,7 @@ func (t *Transaction) Savepoint(name string) error {
 func (t *Transaction) RollbackToSavepoint(savepoint string) error {
 	query := "rollback to savepoint " + t.dbmap.Dialect.QuoteField(savepoint)
 	t.dbmap.trace(query, nil)
-	_, err := t.tx.Exec(query)
+	_, err := exec(t, query)
 	return err
 }
 
@@ -1849,24 +1871,24 @@ func (t *Transaction) RollbackToSavepoint(savepoint string) error {
 func (t *Transaction) ReleaseSavepoint(savepoint string) error {
 	query := "release savepoint " + t.dbmap.Dialect.QuoteField(savepoint)
 	t.dbmap.trace(query, nil)
-	_, err := t.tx.Exec(query)
+	_, err := exec(t, query)
 	return err
 }
 
 // Prepare has the same behavior as DbMap.Prepare(), but runs in a transaction.
 func (t *Transaction) Prepare(query string) (*sql.Stmt, error) {
 	t.dbmap.trace(query, nil)
-	return t.tx.Prepare(query)
+	return prepare(t, query)
 }
 
 func (t *Transaction) queryRow(query string, args ...interface{}) *sql.Row {
 	t.dbmap.trace(query, args...)
-	return t.tx.QueryRow(query, args...)
+	return queryRow(t, query, args...)
 }
 
-func (t *Transaction) query(query string, args ...interface{}) (*sql.Rows, error) {
-	t.dbmap.trace(query, args...)
-	return t.tx.Query(query, args...)
+func (t *Transaction) query(q string, args ...interface{}) (*sql.Rows, error) {
+	t.dbmap.trace(q, args...)
+	return query(t, q, args...)
 }
 
 ///////////////
@@ -2541,6 +2563,38 @@ func handleMultiJoin(v reflect.Value, table *TableMap, multiJoinCols [][]*Column
 	}
 	bufPool.Put(rowKeyBuf)
 	return exists
+}
+
+// maybeExpandNamedQueryAndExec Calls the Exec function on the executor, but attempts to expand any eligible named
+// query arguments first.
+func maybeExpandNamedQueryAndExec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) {
+	dbMap := extractDbMap(e)
+
+	if len(args) == 1 {
+		query, args = maybeExpandNamedQuery(dbMap, query, args)
+	}
+
+	return exec(e, query, args...)
+}
+
+func extractDbMap(e SqlExecutor) *DbMap {
+	switch m := e.(type) {
+	case *DbMap:
+		return m
+	case *Transaction:
+		return m.dbmap
+	}
+	return nil
+}
+
+func extractExecutorAndContext(e SqlExecutor) (executor, context.Context) {
+	switch m := e.(type) {
+	case *DbMap:
+		return m.Db, m.ctx
+	case *Transaction:
+		return m.tx, m.ctx
+	}
+	return nil, nil
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used

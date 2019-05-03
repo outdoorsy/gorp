@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // The Dialect interface encapsulates behaviors that differ across
@@ -317,6 +318,10 @@ func (d PostgresDialect) Cascade() string {
 	return "CASCADE"
 }
 
+func (d PostgresDialect) SleepClause(s time.Duration) string {
+	return fmt.Sprintf("pg_sleep(%f)", s.Seconds())
+}
+
 ///////////////////////////////////////////////////////
 // MySQL //
 ///////////
@@ -453,6 +458,10 @@ func (d MySQLDialect) IfTableNotExists(command, schema, table string) string {
 
 func (d MySQLDialect) Cascade() string {
 	return "CASCADE"
+}
+
+func (d MySQLDialect) SleepClause(s time.Duration) string {
+	return fmt.Sprintf("sleep(%f)", s.Seconds())
 }
 
 ///////////////////////////////////////////////////////
