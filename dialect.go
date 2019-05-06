@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // The Dialect interface encapsulates behaviors that differ across
@@ -59,6 +60,8 @@ type Dialect interface {
 	IfSchemaNotExists(command, schema string) string
 	IfTableExists(command, schema, table string) string
 	IfTableNotExists(command, schema, table string) string
+
+	Cascade() string
 }
 
 // IntegerAutoIncrInserter is implemented by dialects that can perform
@@ -186,6 +189,10 @@ func (d SqliteDialect) IfTableNotExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if not exists", command)
 }
 
+func (d SqliteDialect) Cascade() string {
+	return ""
+}
+
 ///////////////////////////////////////////////////////
 // PostgreSQL //
 ////////////////
@@ -305,6 +312,14 @@ func (d PostgresDialect) IfTableExists(command, schema, table string) string {
 
 func (d PostgresDialect) IfTableNotExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if not exists", command)
+}
+
+func (d PostgresDialect) Cascade() string {
+	return "CASCADE"
+}
+
+func (d PostgresDialect) SleepClause(s time.Duration) string {
+	return fmt.Sprintf("pg_sleep(%f)", s.Seconds())
 }
 
 ///////////////////////////////////////////////////////
@@ -441,6 +456,14 @@ func (d MySQLDialect) IfTableNotExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if not exists", command)
 }
 
+func (d MySQLDialect) Cascade() string {
+	return "CASCADE"
+}
+
+func (d MySQLDialect) SleepClause(s time.Duration) string {
+	return fmt.Sprintf("sleep(%f)", s.Seconds())
+}
+
 ///////////////////////////////////////////////////////
 // Sql Server //
 ////////////////
@@ -570,6 +593,10 @@ func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string
 	return s
 }
 
+func (d SqlServerDialect) Cascade() string {
+	return "CASCADE"
+}
+
 ///////////////////////////////////////////////////////
 // Oracle //
 ///////////
@@ -689,4 +716,8 @@ func (d OracleDialect) IfTableExists(command, schema, table string) string {
 
 func (d OracleDialect) IfTableNotExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if not exists", command)
+}
+
+func (d OracleDialect) Cascade() string {
+	return "CASCADE"
 }
