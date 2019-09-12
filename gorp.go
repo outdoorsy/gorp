@@ -1163,10 +1163,8 @@ type SqlExecutor interface {
 	SelectStr(query string, args ...interface{}) (string, error)
 	SelectNullStr(query string, args ...interface{}) (sql.NullString, error)
 	SelectOne(holder interface{}, query string, args ...interface{}) error
-
-	// these are intended for internal use but are exported for mocking.
-	Query(query string, args ...interface{}) (*sql.Rows, error)
-	QueryRow(query string, args ...interface{}) *sql.Row
+	query(query string, args ...interface{}) (*sql.Rows, error)
+	queryRow(query string, args ...interface{}) *sql.Row
 }
 
 // Compile-time check that DbMap and Transaction implement the SqlExecutor
@@ -1643,12 +1641,12 @@ func (m *DbMap) tableForPointer(ptr interface{}, checkPK bool) (*TableMap, refle
 	return t, elem, nil
 }
 
-func (m *DbMap) QueryRow(query string, args ...interface{}) *sql.Row {
+func (m *DbMap) queryRow(query string, args ...interface{}) *sql.Row {
 	m.trace(query, args...)
 	return queryRow(m, query, args...)
 }
 
-func (m *DbMap) Query(q string, args ...interface{}) (*sql.Rows, error) {
+func (m *DbMap) query(q string, args ...interface{}) (*sql.Rows, error) {
 	if m.TypeConverter != nil {
 		var convErr error
 		for index, value := range args {
@@ -1883,12 +1881,12 @@ func (t *Transaction) Prepare(query string) (*sql.Stmt, error) {
 	return prepare(t, query)
 }
 
-func (t *Transaction) QueryRow(query string, args ...interface{}) *sql.Row {
+func (t *Transaction) queryRow(query string, args ...interface{}) *sql.Row {
 	t.dbmap.trace(query, args...)
 	return queryRow(t, query, args...)
 }
 
-func (t *Transaction) Query(q string, args ...interface{}) (*sql.Rows, error) {
+func (t *Transaction) query(q string, args ...interface{}) (*sql.Rows, error) {
 	t.dbmap.trace(q, args...)
 	return query(t, q, args...)
 }
@@ -2040,7 +2038,7 @@ func selectVal(e SqlExecutor, holder interface{}, query string, args ...interfac
 	// 		query, args = maybeExpandNamedQuery(m.dbmap, query, args)
 	// 	}
 	// }
-	rows, err := e.Query(query, args...)
+	rows, err := e.query(query, args...)
 	if err != nil {
 		return err
 	}
@@ -2345,7 +2343,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	// }
 
 	// Run the query
-	rows, err := exec.Query(query, args...)
+	rows, err := exec.query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2839,7 +2837,7 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 		dest[x] = target
 	}
 
-	row := exec.QueryRow(plan.query, keys...)
+	row := exec.queryRow(plan.query, keys...)
 	err = row.Scan(dest...)
 	if err != nil {
 		if err == sql.ErrNoRows {

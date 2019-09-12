@@ -276,7 +276,7 @@ func (d PostgresDialect) BindVar(i int) string {
 }
 
 func (d PostgresDialect) InsertAutoIncrToTarget(exec SqlExecutor, insertSql string, target interface{}, params ...interface{}) error {
-	rows, err := exec.Query(insertSql, params...)
+	rows, err := exec.query(insertSql, params...)
 	if err != nil {
 		return err
 	}
@@ -679,7 +679,7 @@ func (d OracleDialect) BindVar(i int) string {
 }
 
 func (d OracleDialect) InsertAutoIncr(exec SqlExecutor, insertSql string, params ...interface{}) (int64, error) {
-	rows, err := exec.Query(insertSql, params...)
+	rows, err := exec.query(insertSql, params...)
 	if err != nil {
 		return 0, err
 	}
