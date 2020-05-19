@@ -1150,6 +1150,7 @@ type Transaction struct {
 // information.
 type SqlExecutor interface {
 	WithContext(ctx context.Context) SqlExecutor
+	Context() context.Context
 	Get(i interface{}, keys ...interface{}) (interface{}, error)
 	Insert(list ...interface{}) error
 	Update(list ...interface{}) (int64, error)
@@ -1163,6 +1164,8 @@ type SqlExecutor interface {
 	SelectStr(query string, args ...interface{}) (string, error)
 	SelectNullStr(query string, args ...interface{}) (sql.NullString, error)
 	SelectOne(holder interface{}, query string, args ...interface{}) error
+
+	executor() executor
 	query(query string, args ...interface{}) (*sql.Rows, error)
 	queryRow(query string, args ...interface{}) *sql.Row
 }
@@ -1182,6 +1185,14 @@ func (m *DbMap) WithContext(ctx context.Context) SqlExecutor {
 	*copy = *m
 	copy.ctx = ctx
 	return copy
+}
+
+func (m *DbMap) Context() context.Context {
+	return m.ctx
+}
+
+func (m *DbMap) executor() executor {
+	return m.Db
 }
 
 // TraceOn turns on SQL statement logging for this DbMap.  After this is
@@ -1588,6 +1599,23 @@ func (m *DbMap) Begin() (*Transaction, error) {
 	return &Transaction{m, tx, false, nil, nil, nil, nil}, nil
 }
 
+// BeginContext starts a gorp Transaction and includes a context
+func (m *DbMap) BeginContext(ctx context.Context) (*Transaction, error) {
+	m.trace("begin;")
+
+	// get a dbmap with the context set
+	m = m.WithContext(ctx).(*DbMap)
+
+	// context will be used in `begin`, as well as being assigned
+	// to the tx below
+	tx, err := begin(m)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Transaction{dbmap: m, tx: tx, ctx: ctx}, nil
+}
+
 // TableFor returns the *TableMap corresponding to the given Go Type
 // If no table is mapped to that type an error is returned.
 // If checkPK is true and the mapped table has no registered PKs, an error is returned.
@@ -1723,13 +1751,18 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 	return slice
 }
 
-// WithContext will return a copy of the DbMap with a context set and used for
-// every query executed
+// WithContext is a no-op and just returns the same object.
+// You should use `BeginContext()` instead.
 func (t *Transaction) WithContext(ctx context.Context) SqlExecutor {
-	copy := &Transaction{}
-	*copy = *t
-	copy.ctx = ctx
-	return copy
+	return t
+}
+
+func (t *Transaction) Context() context.Context {
+	return t.ctx
+}
+
+func (t *Transaction) executor() executor {
+	return t.tx
 }
 
 // Insert has the same behavior as DbMap.Insert(), but runs in a transaction.
@@ -2585,16 +2618,6 @@ func extractDbMap(e SqlExecutor) *DbMap {
 		return m.dbmap
 	}
 	return nil
-}
-
-func extractExecutorAndContext(e SqlExecutor) (executor, context.Context) {
-	switch m := e.(type) {
-	case *DbMap:
-		return m.Db, m.ctx
-	case *Transaction:
-		return m.tx, m.ctx
-	}
-	return nil, nil
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used

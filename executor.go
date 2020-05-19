@@ -19,7 +19,7 @@ type executor interface {
 }
 
 func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) {
-	executor, ctx := extractExecutorAndContext(e)
+	executor, ctx := e.executor(), e.Context()
 
 	if ctx != nil {
 		return executor.ExecContext(ctx, query, args...)
@@ -29,7 +29,7 @@ func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) 
 }
 
 func prepare(e SqlExecutor, query string) (*sql.Stmt, error) {
-	executor, ctx := extractExecutorAndContext(e)
+	executor, ctx := e.executor(), e.Context()
 
 	if ctx != nil {
 		return executor.PrepareContext(ctx, query)
@@ -39,7 +39,7 @@ func prepare(e SqlExecutor, query string) (*sql.Stmt, error) {
 }
 
 func queryRow(e SqlExecutor, query string, args ...interface{}) *sql.Row {
-	executor, ctx := extractExecutorAndContext(e)
+	executor, ctx := e.executor(), e.Context()
 
 	if ctx != nil {
 		return executor.QueryRowContext(ctx, query, args...)
@@ -49,7 +49,7 @@ func queryRow(e SqlExecutor, query string, args ...interface{}) *sql.Row {
 }
 
 func query(e SqlExecutor, query string, args ...interface{}) (*sql.Rows, error) {
-	executor, ctx := extractExecutorAndContext(e)
+	executor, ctx := e.executor(), e.Context()
 
 	if ctx != nil {
 		return executor.QueryContext(ctx, query, args...)
