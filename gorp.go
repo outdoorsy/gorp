@@ -1188,6 +1188,9 @@ func (m *DbMap) WithContext(ctx context.Context) SqlExecutor {
 }
 
 func (m *DbMap) Context() context.Context {
+	if m.ctx == nil {
+		return context.Background()
+	}
 	return m.ctx
 }
 
@@ -1758,6 +1761,9 @@ func (t *Transaction) WithContext(ctx context.Context) SqlExecutor {
 }
 
 func (t *Transaction) Context() context.Context {
+	if t.ctx == nil {
+		return context.Background()
+	}
 	return t.ctx
 }
 
