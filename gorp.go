@@ -1754,10 +1754,25 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 	return slice
 }
 
-// WithContext is a no-op and just returns the same object.
-// You should use `BeginContext()` instead.
+func (t *Transaction) copy() *Transaction {
+	out := Transaction{}
+	out.dbmap = t.dbmap
+	out.tx = t.tx
+	out.closed = t.closed
+	out.insertList = t.insertList
+	out.updateList = t.updateList
+	out.deleteList = t.deleteList
+	out.ctx = t.ctx
+	return &out
+}
+
+// WithContext makes a copy of the transaction, preserving all internal fields,
+// and sets the internal context to the provided context.
 func (t *Transaction) WithContext(ctx context.Context) SqlExecutor {
-	return t
+	out := t.copy()
+	out.ctx = ctx
+	out.dbmap = out.dbmap.WithContext(ctx).(*DbMap)
+	return out
 }
 
 func (t *Transaction) Context() context.Context {
