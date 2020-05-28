@@ -1136,9 +1136,9 @@ type Transaction struct {
 
 	// these lists maintain a list of all objects that have been manipulated
 	// inside the transaction so we can issue a final hook at commit time
-	insertList []interface{}
-	updateList []interface{}
-	deleteList []interface{}
+	insertList *[]interface{}
+	updateList *[]interface{}
+	deleteList *[]interface{}
 	ctx        context.Context
 }
 
@@ -1599,7 +1599,15 @@ func (m *DbMap) Begin() (*Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Transaction{m, tx, false, nil, nil, nil, nil}, nil
+	return &Transaction{
+		m,
+		tx,
+		false,
+		&[]interface{}{},
+		&[]interface{}{},
+		&[]interface{}{},
+		nil,
+	}, nil
 }
 
 // BeginContext starts a gorp Transaction and includes a context
@@ -1616,7 +1624,15 @@ func (m *DbMap) BeginContext(ctx context.Context) (*Transaction, error) {
 		return nil, err
 	}
 
-	return &Transaction{dbmap: m, tx: tx, ctx: ctx}, nil
+	return &Transaction{
+		m,
+		tx,
+		false,
+		&[]interface{}{},
+		&[]interface{}{},
+		&[]interface{}{},
+		ctx,
+	}, nil
 }
 
 // TableFor returns the *TableMap corresponding to the given Go Type
@@ -1725,7 +1741,7 @@ func argsString(args ...interface{}) string {
 
 ///////////////
 
-func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
+func appendUnique(slice *[]interface{}, items ...interface{}) {
 	for _, incoming := range items {
 		var found bool
 		var incomingID interface{}
@@ -1733,7 +1749,7 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 			incomingID = v.PostCommitUniqueID()
 		}
 		incomingType := reflect.TypeOf(incoming)
-		for _, existing := range slice {
+		for _, existing := range *slice {
 			// check to see if the incoming object satisfies our interface
 			var existingID interface{}
 			if v, ok := existing.(HasPostCommitUniqueID); ok {
@@ -1748,10 +1764,9 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 			}
 		}
 		if !found {
-			slice = append(slice, incoming)
+			*slice = append(*slice, incoming)
 		}
 	}
-	return slice
 }
 
 func (t *Transaction) copy() *Transaction {
@@ -1788,19 +1803,19 @@ func (t *Transaction) executor() executor {
 
 // Insert has the same behavior as DbMap.Insert(), but runs in a transaction.
 func (t *Transaction) Insert(list ...interface{}) error {
-	t.insertList = appendUnique(t.insertList, list...)
+	appendUnique(t.insertList, list...)
 	return insert(t.dbmap, t, list...)
 }
 
 // Update had the same behavior as DbMap.Update(), but runs in a transaction.
 func (t *Transaction) Update(list ...interface{}) (int64, error) {
-	t.updateList = appendUnique(t.updateList, list...)
+	appendUnique(t.updateList, list...)
 	return update(t.dbmap, t, list...)
 }
 
 // Delete has the same behavior as DbMap.Delete(), but runs in a transaction.
 func (t *Transaction) Delete(list ...interface{}) (int64, error) {
-	t.deleteList = appendUnique(t.deleteList, list...)
+	appendUnique(t.deleteList, list...)
 	return delete(t.dbmap, t, list...)
 }
 
@@ -1866,17 +1881,17 @@ func (t *Transaction) Commit() error {
 		}
 
 		// run post commit hooks
-		for _, o := range t.insertList {
+		for _, o := range *t.insertList {
 			if v, ok := o.(HasPostInsertCommitted); ok {
 				v.PostInsertCommitted(t.dbmap)
 			}
 		}
-		for _, o := range t.updateList {
+		for _, o := range *t.updateList {
 			if v, ok := o.(HasPostUpdateCommitted); ok {
 				v.PostUpdateCommitted(t.dbmap)
 			}
 		}
-		for _, o := range t.deleteList {
+		for _, o := range *t.deleteList {
 			if v, ok := o.(HasPostDeleteCommitted); ok {
 				v.PostDeleteCommitted(t.dbmap)
 			}
