@@ -1725,7 +1725,7 @@ func argsString(args ...interface{}) string {
 
 ///////////////
 
-func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
+func appendUnique(slice *[]interface{}, items ...interface{}) {
 	for _, incoming := range items {
 		var found bool
 		var incomingID interface{}
@@ -1733,7 +1733,7 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 			incomingID = v.PostCommitUniqueID()
 		}
 		incomingType := reflect.TypeOf(incoming)
-		for _, existing := range slice {
+		for _, existing := range *slice {
 			// check to see if the incoming object satisfies our interface
 			var existingID interface{}
 			if v, ok := existing.(HasPostCommitUniqueID); ok {
@@ -1748,10 +1748,9 @@ func appendUnique(slice []interface{}, items ...interface{}) []interface{} {
 			}
 		}
 		if !found {
-			slice = append(slice, incoming)
+			*slice = append(*slice, incoming)
 		}
 	}
-	return slice
 }
 
 func (t *Transaction) copy() *Transaction {
@@ -1788,19 +1787,19 @@ func (t *Transaction) executor() executor {
 
 // Insert has the same behavior as DbMap.Insert(), but runs in a transaction.
 func (t *Transaction) Insert(list ...interface{}) error {
-	t.insertList = appendUnique(t.insertList, list...)
+	appendUnique(&t.insertList, list...)
 	return insert(t.dbmap, t, list...)
 }
 
 // Update had the same behavior as DbMap.Update(), but runs in a transaction.
 func (t *Transaction) Update(list ...interface{}) (int64, error) {
-	t.updateList = appendUnique(t.updateList, list...)
+	appendUnique(&t.updateList, list...)
 	return update(t.dbmap, t, list...)
 }
 
 // Delete has the same behavior as DbMap.Delete(), but runs in a transaction.
 func (t *Transaction) Delete(list ...interface{}) (int64, error) {
-	t.deleteList = appendUnique(t.deleteList, list...)
+	appendUnique(&t.deleteList, list...)
 	return delete(t.dbmap, t, list...)
 }
 
