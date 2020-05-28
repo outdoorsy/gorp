@@ -1599,7 +1599,15 @@ func (m *DbMap) Begin() (*Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Transaction{m, tx, false, nil, nil, nil, nil}, nil
+	return &Transaction{
+		m,
+		tx,
+		false,
+		[]interface{}{},
+		[]interface{}{},
+		[]interface{}{},
+		nil,
+	}, nil
 }
 
 // BeginContext starts a gorp Transaction and includes a context
@@ -1616,7 +1624,15 @@ func (m *DbMap) BeginContext(ctx context.Context) (*Transaction, error) {
 		return nil, err
 	}
 
-	return &Transaction{dbmap: m, tx: tx, ctx: ctx}, nil
+	return &Transaction{
+		m,
+		tx,
+		false,
+		[]interface{}{},
+		[]interface{}{},
+		[]interface{}{},
+		ctx,
+	}, nil
 }
 
 // TableFor returns the *TableMap corresponding to the given Go Type
