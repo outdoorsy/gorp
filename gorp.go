@@ -1142,6 +1142,10 @@ type Transaction struct {
 	ctx        context.Context
 }
 
+func (t *Transaction) GetDbMap() *DbMap {
+	return t.dbmap
+}
+
 // SqlExecutor exposes gorp operations that can be run from Pre/Post
 // hooks.  This hides whether the current operation that triggered the
 // hook is in a transaction.
