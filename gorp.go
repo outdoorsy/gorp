@@ -28,6 +28,11 @@ import (
 	"github.com/lib/pq"
 )
 
+var (
+	errTxNotDefined = errors.New(`*sql.Tx is not defined`)
+	errDbNotDefined = errors.New(`*sql.DB is not defined`)
+)
+
 const sliceIndexPlaceholder = -1
 
 var bufPool = sync.Pool{
@@ -1155,6 +1160,10 @@ func (t *Transaction) GetDbMap() *DbMap {
 type SqlExecutor interface {
 	WithContext(ctx context.Context) SqlExecutor
 	Context() context.Context
+
+	DB() (*sql.DB, error)
+	Tx() (*sql.Tx, error)
+
 	Get(i interface{}, keys ...interface{}) (interface{}, error)
 	Insert(list ...interface{}) error
 	Update(list ...interface{}) (int64, error)
@@ -1196,6 +1205,17 @@ func (m *DbMap) Context() context.Context {
 		return context.Background()
 	}
 	return m.ctx
+}
+
+func (m *DbMap) DB() (*sql.DB, error) {
+	if m.Db == nil {
+		return nil, errDbNotDefined
+	}
+	return m.Db, nil
+}
+
+func (m *DbMap) Tx() (*sql.Tx, error) {
+	return nil, errTxNotDefined
 }
 
 func (m *DbMap) executor() executor {
@@ -1799,6 +1819,17 @@ func (t *Transaction) Context() context.Context {
 		return context.Background()
 	}
 	return t.ctx
+}
+
+func (t *Transaction) DB() (*sql.DB, error) {
+	return t.dbmap.DB()
+}
+
+func (t *Transaction) Tx() (*sql.Tx, error) {
+	if t.tx == nil {
+		return nil, errTxNotDefined
+	}
+	return t.tx, nil
 }
 
 func (t *Transaction) executor() executor {
